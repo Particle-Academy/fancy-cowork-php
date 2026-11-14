@@ -32,6 +32,21 @@ connection to the driver below.
   Pusher- or Reverb-shaped connection at it (`'driver' => 'fancy-pusher'`, with `key`,
   `secret`, `app_id` and `options.host` / `port` / `scheme`). A host already running
   Reverb keeps working: it is the same protocol.
+- **The driver reuses its connection.** One Guzzle handler for the client's lifetime
+  (set through Laravel's `PendingRequest::setHandler`, so `Http::fake` still
+  intercepts), so a publish after the first in a process skips the TLS handshake.
+  Against Genie's WebSockets service: p50 1402 to 1463 ms per publish with a fresh
+  handler, 2.0 to 2.5 ms reused (p95 2.8 to 3.4 ms). The first publish in a process
+  still pays the handshake; plain PHP-FPM starts every request fresh.
+- **Presence intents for server-routed presence.** `cursor` (`route` plus `anchor`,
+  `fx`, `fy` in [0, 1], or `x`, `y` >= 0) and `activity` (`handle`, `active`), posted
+  to the intent endpoint and broadcast with the sender stamped from `identify`. For
+  socket servers that do not stamp a client event's sender: **Sockudo, and so Genie's
+  WebSockets service, needs them**. `authorize` asks `intent:cursor` /
+  `intent:activity`; no view, revision, limits, masking or control; no state. A cursor
+  spends only `rate.cursorsPerSecond` (new, default 10); an activity spends the
+  ordinary intent budget. The shared fixtures gain three cases, re-pinned at
+  `e2bcca74...d6b5`.
 
 ### Changed
 
@@ -41,8 +56,9 @@ connection to the driver below.
 ### Dependencies
 
 - **Still no third-party code**, and now explicitly **no `laravel/reverb` and no
-  `pusher/pusher-php-server`**. Laravel's HTTP client needs Guzzle, which every
-  `laravel/framework` app already has.
+  `pusher/pusher-php-server`**. `guzzlehttp/guzzle` (`^7.8.2 || ^8.0`) is now declared
+  directly, because the driver names its handler: it is the same constraint
+  `illuminate/http` already requires, so nothing new is installed.
 
 ## [0.1.0] - 2026-11-14
 

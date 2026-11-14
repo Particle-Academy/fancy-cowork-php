@@ -10,7 +10,13 @@ namespace FancyCowork\Engine;
  */
 final class Wire
 {
-    public const array INTENT_KINDS = ['visit', 'scroll', 'field', 'focus', 'click', 'submit', 'control', 'app'];
+    public const array INTENT_KINDS = ['visit', 'scroll', 'field', 'focus', 'click', 'submit', 'control', 'app', 'cursor', 'activity'];
+
+    /**
+     * Presence intents: server-routed cursors and field activity, for socket servers that
+     * do not stamp a client event's sender (Sockudo). No view, no revision, no state.
+     */
+    public const array PRESENCE_KINDS = ['cursor', 'activity'];
 
     /** Kinds that act on a view: they need an envelope `view` and `revision`. */
     public const array VIEW_KINDS = ['visit', 'scroll', 'field', 'focus', 'click', 'submit'];
@@ -73,6 +79,49 @@ final class Wire
         $unsafe = '/[\s\x{00}-\x{1f}\x{7f}\x{a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}\x{feff}]/u';
 
         return preg_match($unsafe, $url) === 0;
+    }
+
+    /** A finite number (int or float). */
+    public static function isFinite(mixed $value): bool
+    {
+        return is_int($value) || (is_float($value) && is_finite($value));
+    }
+
+    /** A cursor's route: a path starting with `/`, 1..2048 characters, no control character. */
+    public static function isRoute(mixed $value): bool
+    {
+        if (! is_string($value) || ! mb_check_encoding($value, 'UTF-8') || ! str_starts_with($value, '/')) {
+            return false;
+        }
+        $length = mb_strlen($value, 'UTF-8');
+
+        return $length >= 1 && $length <= 2048 && preg_match('/[\x00-\x1f\x7f]/', $value) !== 1;
+    }
+
+    /** @param  array<string, mixed>  $intent */
+    private static function validCursor(array $intent): bool
+    {
+        if (! self::isRoute($intent['route'] ?? null)) {
+            return false;
+        }
+        if (array_key_exists('anchor', $intent)) {
+            foreach (['fx', 'fy'] as $axis) {
+                $v = $intent[$axis] ?? null;
+                if (! self::isFinite($v) || $v < 0 || $v > 1) {
+                    return false;
+                }
+            }
+
+            return self::isHandle($intent['anchor']);
+        }
+        foreach (['x', 'y'] as $axis) {
+            $v = $intent[$axis] ?? null;
+            if (! self::isFinite($v) || $v < 0) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /** UTF-8 bytes of the JSON encoding, keys in received order, no whitespace, slashes and non-ASCII unescaped. */
@@ -144,6 +193,8 @@ final class Wire
                 && ($intent['op'] !== 'grant' || self::isRef($intent['target'] ?? null)),
             'app' => is_string($intent['topic'] ?? null) && preg_match('/^[a-z0-9][a-z0-9._:-]{0,63}$/D', $intent['topic']) === 1
                 && array_key_exists('payload', $intent),
+            'cursor' => self::validCursor($intent),
+            'activity' => self::isHandle($intent['handle'] ?? null) && is_bool($intent['active'] ?? null),
         };
     }
 }

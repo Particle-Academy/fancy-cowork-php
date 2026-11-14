@@ -123,9 +123,13 @@ final class Engine
 
         $events = $ctx->events;
         $next = $state;
-        $rate = $next['rate'][$from] ?? ['all' => [], 'visit' => [], 'app' => []];
+        $rate = $next['rate'][$from] ?? ['all' => [], 'visit' => [], 'app' => [], 'cursor' => []];
         $keep = static fn (array $times, int $window): array => [...array_values(array_filter($times, static fn (int $t): bool => $t > $now - $window)), $now];
-        $rate['all'] = $keep($rate['all'], 1000);
+        if ($intent['kind'] === 'cursor') {
+            $rate['cursor'] = $keep($rate['cursor'] ?? [], 1000);
+        } else {
+            $rate['all'] = $keep($rate['all'], 1000);
+        }
         if ($intent['kind'] === 'visit') {
             $rate['visit'] = $keep($rate['visit'], 1000);
         }

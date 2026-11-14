@@ -152,6 +152,33 @@ ref). `POST {prefix}/auth` works for anonymous participants too, because it asks
 `identify`, not a Laravel guard. Hosts on Laravel's own `/broadcasting/auth` get the same
 channels registered (`fancy-cowork.channels`).
 
+## Presence over the server (cursors and field activity)
+
+Cursors and "this field is being edited" indicators are presence, not intents a view
+acts on. They can travel two ways, chosen in the browser (agent-integrations'
+`presenceRouting`):
+
+- **direct**: as client events (whispers). Only safe when the socket server stamps the
+  sender on presence-channel client events, as Reverb and Pusher do.
+- **server**: as `cursor` and `activity` intents posted to `POST sessions/{id}/intents`.
+  The server stamps the sender from `identify` and broadcasts to everyone else.
+  **Sockudo, and so Genie's WebSockets service, needs `server`:** it delivers client
+  events without the sender (`user_id: None`), and the browser drops what it cannot
+  attribute.
+
+```json
+{ "intent": { "kind": "cursor", "route": "/doc/1", "anchor": "title", "fx": 0.5, "fy": 0.2 } }
+{ "intent": { "kind": "cursor", "route": "/doc/1", "x": 120, "y": 640 } }
+{ "intent": { "kind": "activity", "handle": "card.number", "active": true } }
+```
+
+They run the same pipeline: `authorize` is asked `intent:cursor` / `intent:activity`,
+and the size limit applies. They need no view or revision, are never subject to
+limits, masking or control, and change no state. **A cursor spends only its own
+bucket**, `rate.cursorsPerSecond` (default 10, host-configurable), so cursors never
+starve the intents; `activity` spends the ordinary intent budget. An activity carries a
+handle and never a value, so it is allowed even on a masked field.
+
 ## Broadcasting: any Pusher-protocol server, no Pusher SDK
 
 Server routing publishes through the package's own `fancy-pusher` broadcast driver: an
@@ -180,6 +207,16 @@ driver refuses a payload over the protocol's 10 KB limit before sending it, send
 most 100 channels per request, excludes the sender's socket, and raises
 `BroadcastException` on a non-2xx answer, never with the secret in it. Laravel's HTTP
 client needs Guzzle, which every `laravel/framework` app already has.
+
+**Connections are reused.** The driver keeps ONE Guzzle handler for its lifetime, so a
+publish after the first in the same PHP process skips the TLS handshake. Measured
+against Genie's WebSockets service (`https://websockets.gen`, 20 publishes, twice): a
+fresh handler per publish took p50 1402 to 1463 ms; the reused handler p50 2.0 to
+2.5 ms and p95 2.8 to 3.4 ms. The FIRST publish in a process still pays the handshake
+(about 1.1 to 1.8 s there), so the gain lands in long-lived processes (queue workers,
+Octane, a request that broadcasts more than once). Under plain PHP-FPM each request
+starts fresh, and PHP 8.4 has no persistent cURL share handle to carry a connection
+across requests.
 
 ## Audit
 

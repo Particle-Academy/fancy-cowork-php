@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace FancyCowork\Broadcasting;
 
 use Closure;
+use GuzzleHttp\Utils;
 use Illuminate\Broadcasting\BroadcastException;
 use Illuminate\Http\Client\Factory as HttpFactory;
 use InvalidArgumentException;
@@ -25,8 +26,21 @@ final class PusherHttpClient
     public const int MAX_CHANNELS = 100;
 
     /**
+     * The ONE Guzzle handler every publish goes through, built on the first. A
+     * handler keeps cURL's easy handles, and with them the open connection and the
+     * TLS session, so a publish after the first in this process skips the handshake.
+     * (Laravel builds a new handler per request unless one is set.) Set through
+     * PendingRequest::setHandler, below Laravel's own middleware, so Http::fake and
+     * the request recorder still see every publish.
+     *
+     * @var callable|null
+     */
+    private $handler = null;
+
+    /**
      * @param  Closure(): HttpFactory  $http  resolved per send, so a host (or a test) can swap it
      * @param  Closure(): int|null  $clock  seconds
+     * @param  Closure(): callable|null  $handlerFactory  builds the persistent handler; default Guzzle's best for this PHP
      */
     public function __construct(
         private readonly Closure $http,
@@ -36,6 +50,7 @@ final class PusherHttpClient
         private readonly string $baseUrl,
         private readonly int $timeout = 5,
         private readonly ?Closure $clock = null,
+        private readonly ?Closure $handlerFactory = null,
     ) {}
 
     /**
@@ -44,8 +59,9 @@ final class PusherHttpClient
      *
      * @param  Closure(): HttpFactory  $http
      * @param  array<string, mixed>  $config
+     * @param  Closure(): callable|null  $handlerFactory
      */
-    public static function fromConfig(Closure $http, array $config): self
+    public static function fromConfig(Closure $http, array $config, ?Closure $handlerFactory = null): self
     {
         $options = is_array($config['options'] ?? null) ? $config['options'] : [];
         foreach (['key' => $config['key'] ?? null, 'secret' => $config['secret'] ?? null, 'app_id' => $config['app_id'] ?? null, 'options.host' => $options['host'] ?? null] as $name => $value) {
@@ -66,6 +82,8 @@ final class PusherHttpClient
             (string) $config['secret'],
             "{$scheme}://{$host}:{$port}",
             isset($options['timeout']) && is_numeric($options['timeout']) ? (int) $options['timeout'] : 5,
+            null,
+            $handlerFactory,
         );
     }
 
@@ -110,7 +128,9 @@ final class PusherHttpClient
             $query = PusherProtocol::eventQuery($this->key, $this->secret, $path, $body, $now);
 
             try {
+                $this->handler ??= $this->handlerFactory !== null ? ($this->handlerFactory)() : Utils::chooseHandler();
                 $response = ($this->http)()
+                    ->setHandler($this->handler)
                     ->timeout($this->timeout)
                     ->acceptJson()
                     ->withBody($body, 'application/json')

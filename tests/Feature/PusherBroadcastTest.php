@@ -125,6 +125,41 @@ it('raises a BroadcastException on a non-2xx answer, without the secret in it', 
     }
 });
 
+it('reuses ONE handler for every publish, so connections and TLS sessions stay warm', function (): void {
+    coworkApp();
+    $built = 0;
+    $calls = [];
+    $handler = function ($request, array $options) use (&$calls) {
+        $calls[] = (string) $request->getUri()->getPath();
+
+        return \GuzzleHttp\Promise\Create::promiseFor(new \GuzzleHttp\Psr7\Response(200, [], '{}'));
+    };
+    $client = PusherHttpClient::fromConfig(fn () => new HttpFactory, pusherConnection(), function () use (&$built, $handler) {
+        $built++;
+
+        return $handler;
+    });
+
+    $client->trigger(['presence-x'], 'one', ['n' => 1]);
+    $client->trigger(['presence-x'], 'two', ['n' => 2]);
+    $client->trigger(array_map(fn (int $i): string => "private-c{$i}", range(1, 150)), 'three', ['n' => 3]);
+
+    // Four requests (the last one is two chunks), ONE handler built for all of them.
+    expect($calls)->toBe(array_fill(0, 4, '/apps/app-id/events'))
+        ->and($built)->toBe(1);
+});
+
+it('still lets Http::fake intercept while the handler is reused', function (): void {
+    coworkApp(['broadcasting.default' => 'pusherish', 'broadcasting.connections.pusherish' => pusherConnection()]);
+    [$http] = fakeHttp();
+    $broadcaster = app(BroadcastManager::class)->connection();
+
+    $broadcaster->broadcast(['presence-x'], 'one', ['n' => 1]);
+    $broadcaster->broadcast(['presence-x'], 'two', ['n' => 2]);
+
+    expect(array_map(fn (ClientRequest $r): string => json_decode($r->body(), true)['name'], sentRequests($http)))->toBe(['one', 'two']);
+});
+
 it('names a missing setting without echoing any value', function (): void {
     expect(fn () => PusherHttpClient::fromConfig(fn () => new HttpFactory, ['key' => 'k', 'app_id' => '1', 'options' => ['host' => 'h']]))
         ->toThrow(InvalidArgumentException::class, 'secret');

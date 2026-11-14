@@ -28,8 +28,14 @@ leg of fancy-cowork (CC-fancy-0037): generic co-working sessions. The Node twin 
   request signature), `PusherHttpClient` (`POST /apps/{id}/events` over Laravel's HTTP
   client: 10 KB limit, 100-channel chunks, sender socket excluded), `PusherBroadcaster`
   (Laravel's Pusher conventions). Registered in `CoworkServiceProvider` before the channel
-  callbacks resolve. **laravel/reverb and pusher/pusher-php-server are refused** (owner,
+  callbacks resolve. The client keeps ONE Guzzle handler for its lifetime (keep-alive;
+  `PendingRequest::setHandler`, so `Http::fake` still intercepts).
+  **laravel/reverb and pusher/pusher-php-server are refused** (owner,
   q_63a8ab0c); never add them, any Pusher-protocol server works through this driver.
+- Presence intents `cursor` / `activity` (`Wire::PRESENCE_KINDS`): server-routed
+  presence for socket servers that do not stamp senders (Sockudo). Validated in
+  `Wire::validIntent`; a cursor spends only `rate.cursorsPerSecond` (`Pipeline::rateLimit`,
+  committed in `Engine::evaluateIntent`), never the intent budget.
 - `src/Console/DoctorCommand.php`: `cowork:doctor`.
 - `conformance/cowork-v1.json`: the shared fixtures, byte-identical with fancy-cowork-js
   and agent-integrations, pinned by SHA-256 in `tests/Support/Fixtures.php`.

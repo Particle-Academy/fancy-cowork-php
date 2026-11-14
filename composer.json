@@ -29,6 +29,7 @@
     "require": {
         "php": "^8.4",
         "ext-json": "*",
+        "guzzlehttp/guzzle": "^7.8.2 || ^8.0",
         "illuminate/broadcasting": "^13.0",
         "illuminate/console": "^13.0",
         "illuminate/contracts": "^13.0",

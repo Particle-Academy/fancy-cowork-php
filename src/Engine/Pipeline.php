@@ -329,7 +329,15 @@ final class Pipeline
     private static function rateLimit(PipelineContext $ctx, array $intent, Closure $next): array
     {
         $rate = $ctx->config['rate'];
-        $mine = $ctx->session['rate'][$ctx->from] ?? ['all' => [], 'visit' => [], 'app' => []];
+        $mine = $ctx->session['rate'][$ctx->from] ?? ['all' => [], 'visit' => [], 'app' => [], 'cursor' => []];
+        // A cursor spends only its own bucket, so cursors never starve the intents.
+        if ($intent['kind'] === 'cursor') {
+            if (self::within($mine['cursor'] ?? [], $ctx->now, 1000) >= $rate['cursorsPerSecond']) {
+                return Reasons::refuse(Reasons::RATE, 429);
+            }
+
+            return $next();
+        }
         if (self::within($mine['all'], $ctx->now, 1000) >= $rate['intentsPerSecond']) {
             return Reasons::refuse(Reasons::RATE, 429);
         }

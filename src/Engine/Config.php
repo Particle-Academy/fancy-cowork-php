@@ -16,7 +16,7 @@ final class Config
         'control' => ['mode' => 'baton'],
         'routing' => 'server',
         'limits' => ['allow' => [], 'deny' => [], 'mask' => [], 'viewOnly' => []],
-        'rate' => ['intentsPerSecond' => 10, 'visitsPerSecond' => 1, 'appPerMinute' => 30, 'startsPerMinute' => 5],
+        'rate' => ['intentsPerSecond' => 10, 'visitsPerSecond' => 1, 'appPerMinute' => 30, 'startsPerMinute' => 5, 'cursorsPerSecond' => 10],
         'size' => ['intentBytes' => 8192, 'appBytes' => 16384],
         'maxParticipants' => 16,
     ];
