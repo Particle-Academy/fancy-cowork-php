@@ -16,7 +16,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 and it never will be: it reached browsers only through Laravel's own pusher/reverb
 broadcaster, which needs `pusher/pusher-php-server`, and the owner refused that and
 `laravel/reverb` (q_63a8ab0c). Its lab certificate was signed against a Reverb host. 0.2.0
-publishes with its own client instead and is certified against Genie's WebSockets service.
+publishes with its own client instead, and its lab benchmark runs on Genie's WebSockets service.
 **Nothing to do** unless you installed `v0.1.0` from git: then switch your broadcasting
 connection to the driver below.
 
