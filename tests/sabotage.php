@@ -58,6 +58,8 @@ $mutations = [
     ['audit row loses actingFor', 'src/Audit/AuditRecorder.php', "'acting_for' => \$event->actingFor,", "'acting_for' => null,"],
     ['relayed event names the wrong sender', 'src/Engine/Pipeline.php', "\$event = ['type' => 'IntentRelayed', 'session' => \$ctx->session['id'], 'ref' => \$ctx->from];", "\$event = ['type' => 'IntentRelayed', 'session' => \$ctx->session['id'], 'ref' => (string) \$ctx->view];"],
     ['a host model appears', 'src/Session.php', 'final readonly class Session', '/* App\\Models\\User */ final readonly class Session'],
+    ['reserved refs accepted', 'src/Engine/Wire.php', "return self::isHandle(\$value) && ! in_array(\$value, self::RESERVED_REFS, true);", 'return self::isHandle($value);'],
+    ['sender ref unchecked', 'src/Engine/Engine.php', "if (! Wire::isRef(\$from)) {\n            return Reasons::refuse(Reasons::UNIDENTIFIED, 401);", "if (false) {\n            return Reasons::refuse(Reasons::UNIDENTIFIED, 401);"],
 ];
 
 $pest = escapeshellarg(PHP_BINARY).' '.escapeshellarg($root.'/vendor/pestphp/pest/bin/pest').' --bail';

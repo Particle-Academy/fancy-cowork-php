@@ -15,13 +15,16 @@ namespace FancyCowork\Engine;
  */
 final class Engine
 {
-    private static function prelude(EngineHost $host): ?array
+    private static function prelude(EngineHost $host, mixed $from): ?array
     {
         if (! $host->identity) {
             return Reasons::refuse(Reasons::UNCONFIGURED_IDENTITY, 403);
         }
         if ($host->config === null) {
             return Reasons::refuse(Reasons::UNCONFIGURED_CONFIG, 403);
+        }
+        if (! Wire::isRef($from)) {
+            return Reasons::refuse(Reasons::UNIDENTIFIED, 401);
         }
 
         return null;
@@ -97,7 +100,7 @@ final class Engine
      */
     public static function evaluateIntent(EngineHost $host, array $state, array $input): Result
     {
-        if ($early = self::prelude($host)) {
+        if ($early = self::prelude($host, $input['from'] ?? null)) {
             return self::refused($state, $early);
         }
         $envelope = Wire::isRecord($input['envelope']) ? $input['envelope'] : [];
@@ -177,7 +180,7 @@ final class Engine
      */
     public static function evaluateJoin(EngineHost $host, array $state, array $input): Result
     {
-        $checks = self::prelude($host) ?? self::sessionGate($state) ?? self::membersGate($host, $input['from']) ?? self::abilityGate($host, $input['from'], 'join');
+        $checks = self::prelude($host, $input['from'] ?? null) ?? self::sessionGate($state) ?? self::membersGate($host, $input['from']) ?? self::abilityGate($host, $input['from'], 'join');
         if ($checks) {
             return self::refused($state, $checks);
         }
@@ -206,7 +209,7 @@ final class Engine
      */
     public static function evaluateActivate(EngineHost $host, array $state, array $input): Result
     {
-        if ($early = self::prelude($host)) {
+        if ($early = self::prelude($host, $input['from'] ?? null)) {
             return self::refused($state, $early);
         }
         if ($state['state'] === 'ended') {
@@ -248,7 +251,7 @@ final class Engine
      */
     public static function evaluateConsent(EngineHost $host, array $state, array $input): Result
     {
-        if ($early = self::prelude($host)) {
+        if ($early = self::prelude($host, $input['from'] ?? null)) {
             return self::refused($state, $early);
         }
         if ($state['state'] === 'ended') {
@@ -272,7 +275,7 @@ final class Engine
      */
     public static function evaluateEnd(EngineHost $host, array $state, array $input): Result
     {
-        if ($early = self::prelude($host)) {
+        if ($early = self::prelude($host, $input['from'] ?? null)) {
             return self::refused($state, $early);
         }
         if ($state['state'] === 'ended') {
@@ -304,6 +307,9 @@ final class Engine
     public static function evaluateLeave(EngineHost $host, array $state, array $input): Result
     {
         $ref = $input['from'];
+        if (! Wire::isRef($ref)) {
+            return self::refused($state, Reasons::refuse(Reasons::UNIDENTIFIED, 401));
+        }
         if (! isset($state['participants'][$ref])) {
             return self::refused($state, Reasons::refuse(Reasons::MEMBERSHIP, 403));
         }
@@ -341,7 +347,7 @@ final class Engine
      */
     public static function evaluateFollow(EngineHost $host, array $state, array $input): Result
     {
-        if ($early = self::prelude($host) ?? self::sessionGate($state)) {
+        if ($early = self::prelude($host, $input['from'] ?? null) ?? self::sessionGate($state)) {
             return self::refused($state, $early);
         }
         if ($host->members === null) {

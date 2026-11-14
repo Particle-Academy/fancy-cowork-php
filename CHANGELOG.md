@@ -54,3 +54,12 @@ assumptions about the host's models.
   `laravel/framework` is a **test** dependency under the framework carve-out (it is the
   framework this package integrates with); `pestphp/pest` ^5 runs the suite. Reverb is
   suggested, not required: any Pusher-protocol server works.
+
+### Changed
+
+- **`__proto__`, `constructor` and `prototype` are never a ref**, matching the JS legs,
+  which fixed a prototype-polluting assignment (fancy-cowork-js code scanning alert 1).
+  PHP arrays have no prototype, so this leg was never exploitable; it refuses the same
+  names (`cowork.invalid.intent` in `view` / `to` / `target`, `cowork.unidentified` for
+  the sender) so the three legs agree on the re-pinned fixtures.
+

@@ -39,9 +39,16 @@ final class Wire
         return $length <= 256 && preg_match('/[\x00-\x1f\x7f]/', $value) !== 1;
     }
 
+    /**
+     * Names that are never a ref. PHP arrays have no prototype, so nothing here can be
+     * polluted; they are refused anyway so the PHP, Node and browser legs agree (the JS
+     * legs key ordinary objects by ref, where these three reach Object.prototype).
+     */
+    public const array RESERVED_REFS = ['__proto__', 'constructor', 'prototype'];
+
     public static function isRef(mixed $value): bool
     {
-        return self::isHandle($value);
+        return self::isHandle($value) && ! in_array($value, self::RESERVED_REFS, true);
     }
 
     public static function isInteger(mixed $value): bool
