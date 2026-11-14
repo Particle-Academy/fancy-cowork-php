@@ -3,7 +3,18 @@
     "description": "Generic human co-work sessions for Laravel: host-resolved identity, membership and policy (default deny), per-participant views with follow and drive, a server intent pipeline with pluggable middleware, channel auth and audit events. No chat.",
     "type": "library",
     "license": "MIT",
-    "keywords": ["laravel", "cowork", "co-browse", "collaboration", "presence", "reverb", "broadcasting", "human-plus", "fancy", "particle-academy"],
+    "keywords": [
+        "laravel",
+        "cowork",
+        "co-browse",
+        "collaboration",
+        "presence",
+        "broadcasting",
+        "human-plus",
+        "fancy",
+        "particle-academy",
+        "pusher-protocol"
+    ],
     "homepage": "https://github.com/Particle-Academy/fancy-cowork-php",
     "support": {
         "issues": "https://github.com/Particle-Academy/fancy-cowork-php/issues",
@@ -32,7 +43,6 @@
         "pestphp/pest": "^5.0"
     },
     "suggest": {
-        "laravel/reverb": "The broadcaster the package is built against. Any Pusher-protocol server works; client events must be enabled for direct routing.",
         "particle-academy/agent-integrations": "npm: the browser side (useCoworkSession, presence, cursors)."
     },
     "autoload": {

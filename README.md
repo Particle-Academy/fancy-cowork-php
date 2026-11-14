@@ -141,8 +141,8 @@ Refusals are `{reason, blockedUntil?}` with 401 / 403 / 404 / 409 / 410 / 413 / 
   and the intent is broadcast on `presence-cowork.session.{id}` to everyone but the sender's
   socket (`X-Socket-ID`). The sender is always the one `identify` returned; nothing in a
   body can set it.
-- **direct**: intents travel peer to peer over presence whispers (Reverb client events must
-  be enabled: `accept_client_events_from`). The same pipeline runs at the sender and again
+- **direct**: intents travel peer to peer over presence whispers (the socket server must
+  allow client events). The same pipeline runs at the sender and again
   at every receiver, in the browser (agent-integrations), because there is no server in
   between.
 
@@ -151,6 +151,35 @@ member payload comes from the server) and `private-cowork.participant.{ref}` (on
 ref). `POST {prefix}/auth` works for anonymous participants too, because it asks your
 `identify`, not a Laravel guard. Hosts on Laravel's own `/broadcasting/auth` get the same
 channels registered (`fancy-cowork.channels`).
+
+## Broadcasting: any Pusher-protocol server, no Pusher SDK
+
+Server routing publishes through the package's own `fancy-pusher` broadcast driver: an
+HMAC-signed `POST /apps/{app_id}/events` over Laravel's HTTP client, plus Laravel's
+`/broadcasting/auth` signatures. It works with any Pusher-protocol server (Genie's
+WebSockets service, Sockudo, Reverb, Pusher), and needs neither `pusher/pusher-php-server`
+nor `laravel/reverb`. Point your existing Pusher- or Reverb-shaped connection at it:
+
+```php
+// config/broadcasting.php
+'reverb' => [
+    'driver' => 'fancy-pusher',
+    'key' => env('REVERB_APP_KEY'),
+    'secret' => env('REVERB_APP_SECRET'),
+    'app_id' => env('REVERB_APP_ID'),
+    'options' => [
+        'host' => env('REVERB_HOST'),
+        'port' => env('REVERB_PORT', 443),
+        'scheme' => env('REVERB_SCHEME', 'https'),
+    ],
+],
+```
+
+A host already running Reverb keeps working either way: it is the same protocol. The
+driver refuses a payload over the protocol's 10 KB limit before sending it, sends at
+most 100 channels per request, excludes the sender's socket, and raises
+`BroadcastException` on a non-2xx answer, never with the secret in it. Laravel's HTTP
+client needs Guzzle, which every `laravel/framework` app already has.
 
 ## Audit
 

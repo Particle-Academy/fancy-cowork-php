@@ -50,12 +50,23 @@ assumptions about the host's models.
   full by the suite. `tests/sabotage.php` breaks 42 clauses one at a time and the suite
   catches every one.
 
+- **`fancy-pusher` broadcast driver**: publishes to any Pusher-protocol server (Genie's
+  WebSockets service, Sockudo, Reverb, Pusher) with an HMAC-signed `POST
+  /apps/{app_id}/events` over Laravel's HTTP client, and signs `/broadcasting/auth`.
+  Our own code, pinned to the Pusher protocol's documented signature examples.
+  Refuses a payload over 10 KB before sending, chunks at 100 channels, excludes the
+  sender's socket, and raises `BroadcastException` (never carrying the secret) on a
+  non-2xx answer. Point a Pusher- or Reverb-shaped connection at `driver:
+  'fancy-pusher'`; a host already on Reverb keeps working, it is the same protocol.
+
 ### Dependencies
 
 - **No third-party code.** Runtime requires only `illuminate/*` 13 components.
   `laravel/framework` is a **test** dependency under the framework carve-out (it is the
-  framework this package integrates with); `pestphp/pest` ^5 runs the suite. Reverb is
-  suggested, not required: any Pusher-protocol server works.
+  framework this package integrates with); `pestphp/pest` ^5 runs the suite. **No
+  `laravel/reverb` and no `pusher/pusher-php-server`** (both refused, owner,
+  q_63a8ab0c): the package ships its own `fancy-pusher` broadcast driver instead, and
+  works with any Pusher-protocol server.
 
 ### Changed
 

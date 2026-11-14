@@ -24,6 +24,12 @@ leg of fancy-cowork (CC-fancy-0037): generic co-working sessions. The Node twin 
   `src/Audit/AuditRecorder.php`: the optional `cowork_audit` writer.
 - `src/GuestTokens.php`: optional signed guest-token `identify` resolver.
 - `src/PusherSignature.php`: Pusher-protocol channel signature.
+- `src/Broadcasting/`: the `fancy-pusher` broadcast driver. `PusherProtocol` (HTTP API
+  request signature), `PusherHttpClient` (`POST /apps/{id}/events` over Laravel's HTTP
+  client: 10 KB limit, 100-channel chunks, sender socket excluded), `PusherBroadcaster`
+  (Laravel's Pusher conventions). Registered in `CoworkServiceProvider` before the channel
+  callbacks resolve. **laravel/reverb and pusher/pusher-php-server are refused** (owner,
+  q_63a8ab0c); never add them, any Pusher-protocol server works through this driver.
 - `src/Console/DoctorCommand.php`: `cowork:doctor`.
 - `conformance/cowork-v1.json`: the shared fixtures, byte-identical with fancy-cowork-js
   and agent-integrations, pinned by SHA-256 in `tests/Support/Fixtures.php`.

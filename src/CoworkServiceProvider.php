@@ -5,10 +5,13 @@ declare(strict_types=1);
 namespace FancyCowork;
 
 use FancyCowork\Audit\AuditRecorder;
+use FancyCowork\Broadcasting\PusherBroadcaster;
+use FancyCowork\Broadcasting\PusherHttpClient;
 use FancyCowork\Console\DoctorCommand;
 use FancyCowork\Contracts\CoworkEvent;
 use FancyCowork\Store\SessionStore;
 use Illuminate\Broadcasting\BroadcastManager;
+use Illuminate\Http\Client\Factory as HttpFactory;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 use Illuminate\Support\ServiceProvider;
@@ -56,7 +59,28 @@ final class CoworkServiceProvider extends ServiceProvider
             $this->publishes([__DIR__.'/../database/migrations' => $this->app->databasePath('migrations')], 'fancy-cowork-migrations');
         }
 
+        $this->registerPusherDriver();
         $this->registerChannels();
+    }
+
+    /**
+     * The `fancy-pusher` broadcast driver: any Pusher-protocol server (Genie's
+     * WebSockets service, Sockudo, Reverb, Pusher) through our own HTTP-API client,
+     * so a host needs neither pusher/pusher-php-server nor laravel/reverb. Registered
+     * before the channel callbacks resolve the default connection.
+     */
+    private function registerPusherDriver(): void
+    {
+        $extend = function (BroadcastManager $manager): void {
+            $manager->extend('fancy-pusher', fn ($app, array $config): PusherBroadcaster => new PusherBroadcaster(
+                PusherHttpClient::fromConfig(fn (): HttpFactory => $app->make(HttpFactory::class), $config),
+            ));
+        };
+        if ($this->app->resolved(BroadcastManager::class)) {
+            $extend($this->app->make(BroadcastManager::class));
+        } elseif ($this->app->bound(BroadcastManager::class)) {
+            $this->app->afterResolving(BroadcastManager::class, $extend);
+        }
     }
 
     /**

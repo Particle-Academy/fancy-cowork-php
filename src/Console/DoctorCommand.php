@@ -26,9 +26,9 @@ final class DoctorCommand extends Command
             $unbound += $bound ? 0 : 1;
         }
         $driver = (string) config('broadcasting.default', 'null');
-        $this->line(sprintf('  %-10s %s', 'broadcast', $driver.($driver === 'null' || $driver === 'log' ? ' (nothing reaches a browser; server routing needs Reverb or Pusher)' : '')));
+        $this->line(sprintf('  %-10s %s', 'broadcast', $driver.($driver === 'null' || $driver === 'log' ? ' (nothing reaches a browser; server routing needs a Pusher-protocol server, e.g. driver fancy-pusher)' : '')));
         $this->line(sprintf('  %-10s %s', 'stack', implode(', ', $cowork->stackNames())));
-        $this->line('  Direct routing also needs client events enabled on the socket server (Reverb: accept_client_events_from).');
+        $this->line('  Direct routing also needs client events enabled on the socket server.');
 
         if ($unbound > 0) {
             $this->error("{$unbound} contract(s) unbound. Bind them on the Cowork facade; see the README.");
