@@ -1,0 +1,70 @@
+{
+    "name": "particle-academy/fancy-cowork",
+    "description": "Generic human co-work sessions for Laravel: host-resolved identity, membership and policy (default deny), per-participant views with follow and drive, a server intent pipeline with pluggable middleware, channel auth and audit events. No chat.",
+    "type": "library",
+    "license": "MIT",
+    "keywords": ["laravel", "cowork", "co-browse", "collaboration", "presence", "reverb", "broadcasting", "human-plus", "fancy", "particle-academy"],
+    "homepage": "https://github.com/Particle-Academy/fancy-cowork-php",
+    "support": {
+        "issues": "https://github.com/Particle-Academy/fancy-cowork-php/issues",
+        "source": "https://github.com/Particle-Academy/fancy-cowork-php"
+    },
+    "authors": [
+        {
+            "name": "Particle Academy",
+            "homepage": "https://github.com/Particle-Academy"
+        }
+    ],
+    "require": {
+        "php": "^8.4",
+        "ext-json": "*",
+        "illuminate/broadcasting": "^13.0",
+        "illuminate/console": "^13.0",
+        "illuminate/contracts": "^13.0",
+        "illuminate/database": "^13.0",
+        "illuminate/events": "^13.0",
+        "illuminate/http": "^13.0",
+        "illuminate/routing": "^13.0",
+        "illuminate/support": "^13.0"
+    },
+    "require-dev": {
+        "laravel/framework": "^13.30",
+        "pestphp/pest": "^5.0"
+    },
+    "suggest": {
+        "laravel/reverb": "The broadcaster the package is built against. Any Pusher-protocol server works; client events must be enabled for direct routing.",
+        "particle-academy/agent-integrations": "npm: the browser side (useCoworkSession, presence, cursors)."
+    },
+    "autoload": {
+        "psr-4": {
+            "FancyCowork\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "FancyCowork\\Tests\\": "tests/"
+        }
+    },
+    "scripts": {
+        "test": "pest",
+        "lint": "@php tests/lint.php"
+    },
+    "extra": {
+        "laravel": {
+            "providers": [
+                "FancyCowork\\CoworkServiceProvider"
+            ],
+            "aliases": {
+                "Cowork": "FancyCowork\\Facades\\Cowork"
+            }
+        }
+    },
+    "config": {
+        "allow-plugins": {
+            "pestphp/pest-plugin": true
+        },
+        "sort-packages": true
+    },
+    "minimum-stability": "stable",
+    "prefer-stable": true
+}

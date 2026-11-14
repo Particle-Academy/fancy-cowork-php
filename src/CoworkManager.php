@@ -1,0 +1,661 @@
+<?php
+
+declare(strict_types=1);
+
+namespace FancyCowork;
+
+use Closure;
+use FancyCowork\Engine\Config;
+use FancyCowork\Engine\Engine;
+use FancyCowork\Engine\EngineHost;
+use FancyCowork\Engine\Pipeline;
+use FancyCowork\Engine\Reasons;
+use FancyCowork\Engine\Result;
+use FancyCowork\Engine\SessionState;
+use FancyCowork\Engine\Wire;
+use FancyCowork\Events\CoworkEventBase;
+use FancyCowork\Store\SessionStore;
+use FancyCowork\Support\Ulid;
+use Illuminate\Contracts\Broadcasting\Factory as BroadcastFactory;
+use Illuminate\Contracts\Config\Repository as ConfigRepository;
+use Illuminate\Contracts\Container\Container;
+use Illuminate\Contracts\Events\Dispatcher;
+use Illuminate\Http\Request;
+use InvalidArgumentException;
+use Throwable;
+
+/**
+ * The host contracts and the server handlers. Every contract is optional to
+ * BIND and mandatory to WORK: an unbound one refuses with
+ * `cowork.unconfigured.<name>`, so a fresh install does nothing at all until
+ * the host decides who may do what. Reached through the `Cowork` facade.
+ *
+ *     Cowork::identify(fn (Request $r): ?Participant => ...)   // who is this request
+ *         ->members(fn (Session $s, Participant $p): bool => ...)
+ *         ->authorize(fn (Participant $p, string $ability, Session $s, ?array $intent): bool|array => ...)
+ *         ->config(fn (Session $s): array => [...])            // consent, control, routing, limits
+ *         ->middleware(fn (array $defaults): array => [...$defaults, MyCheck::class]);
+ *
+ * Only a literal `true` (or `['allow' => true]`) from a resolver allows.
+ * Abilities asked: start, request, activate, join, end, follow, drive,
+ * intent:<kind>, view:<ref>.
+ */
+final class CoworkManager
+{
+    private ?Closure $identify = null;
+
+    private ?Closure $members = null;
+
+    private ?Closure $authorize = null;
+
+    private ?Closure $config = null;
+
+    /** @var list<mixed> */
+    private array $stack = Pipeline::DEFAULT_MIDDLEWARE;
+
+    /** @var array<string, Closure> */
+    private array $predicates = [];
+
+    private ?Closure $clock = null;
+
+    private const string SESSION_ID = '/^[A-Za-z0-9_-]{1,64}$/D';
+
+    private const string SESSION_CHANNEL = '/^presence-cowork\.session\.([A-Za-z0-9_-]{1,64})$/D';
+
+    private const string PARTICIPANT_CHANNEL = '/^private-cowork\.participant\.(.{1,256})$/sD';
+
+    public function __construct(
+        private readonly Container $container,
+        private readonly SessionStore $store,
+        private readonly Dispatcher $events,
+        private readonly ConfigRepository $settings,
+    ) {}
+
+    // -------------------------------------------------------------------
+    // Host contracts
+    // -------------------------------------------------------------------
+
+    /** @param  Closure(Request): (Participant|array<string, mixed>|null)  $resolver */
+    public function identify(Closure $resolver): self
+    {
+        $this->identify = $resolver;
+
+        return $this;
+    }
+
+    /** @param  Closure(Session, Participant): bool  $resolver */
+    public function members(Closure $resolver): self
+    {
+        $this->members = $resolver;
+
+        return $this;
+    }
+
+    /** @param  Closure(Participant, string, Session, ?array<string, mixed>): (bool|array{allow: bool, reason?: string})  $policy */
+    public function authorize(Closure $policy): self
+    {
+        $this->authorize = $policy;
+
+        return $this;
+    }
+
+    /** @param  Closure(Session): array<string, mixed>  $resolver */
+    public function config(Closure $resolver): self
+    {
+        $this->config = $resolver;
+
+        return $this;
+    }
+
+    /**
+     * The intent middleware stack: default names, closures, IntentMiddleware
+     * instances or class names, in order. Or a closure given the defaults.
+     * An unknown default name throws here, not at the first intent.
+     *
+     * @param  list<mixed>|(Closure(list<string>): list<mixed>)  $stack
+     */
+    public function middleware(array|Closure $stack): self
+    {
+        $entries = $stack instanceof Closure ? $stack(Pipeline::DEFAULT_MIDDLEWARE) : $stack;
+        $resolved = array_map(fn (mixed $entry): mixed => is_string($entry) && ! in_array($entry, Pipeline::DEFAULT_MIDDLEWARE, true) && class_exists($entry)
+            ? $this->container->make($entry)
+            : $entry, array_values($entries));
+        Pipeline::resolve($resolved);
+        $this->stack = $resolved;
+
+        return $this;
+    }
+
+    /**
+     * Named predicates for a limits rule's `when`. A name with no predicate fails closed.
+     *
+     * @param  array<string, Closure>  $predicates
+     */
+    public function predicates(array $predicates): self
+    {
+        $this->predicates = $predicates;
+
+        return $this;
+    }
+
+    /** The millisecond clock (tests and replays). */
+    public function clock(Closure $clock): self
+    {
+        $this->clock = $clock;
+
+        return $this;
+    }
+
+    /** @return array<string, bool> contract => bound */
+    public function contracts(): array
+    {
+        return [
+            'identify' => $this->identify !== null,
+            'members' => $this->members !== null,
+            'authorize' => $this->authorize !== null,
+            'config' => $this->config !== null,
+        ];
+    }
+
+    /** @return list<string> the stack, with host entries shown as `host` */
+    public function stackNames(): array
+    {
+        return array_map(static fn (mixed $entry): string => is_string($entry) ? $entry : 'host', $this->stack);
+    }
+
+    // -------------------------------------------------------------------
+    // Handlers
+    // -------------------------------------------------------------------
+
+    /** @param  array<string, mixed>  $body  `mode`: start | request, `route` */
+    public function create(Request $request, array $body): CoworkResponse
+    {
+        return $this->guarded(function () use ($request, $body): CoworkResponse {
+            $who = $this->identifyOrRefuse($request);
+            if ($who instanceof CoworkResponse) {
+                return $who;
+            }
+            if ($this->config === null) {
+                return CoworkResponse::refuse(403, Reasons::UNCONFIGURED_CONFIG);
+            }
+            $mode = $body['mode'] ?? 'start';
+            if (! in_array($mode, ['start', 'request'], true)) {
+                return CoworkResponse::refuse(422, 'cowork.invalid.request');
+            }
+            $at = $this->now();
+            $draft = SessionState::create(Ulid::generate($at), $mode === 'start' ? 'live' : 'requested', $who->ref, [], $at);
+            $session = Session::fromState($draft);
+            $config = $this->resolveConfig($session);
+            if ($this->members === null) {
+                return CoworkResponse::refuse(403, Reasons::UNCONFIGURED_MEMBERS);
+            }
+            if (($this->members)($session, $who) !== true) {
+                return CoworkResponse::refuse(403, Reasons::MEMBERSHIP);
+            }
+            if ($this->authorize === null) {
+                return CoworkResponse::refuse(403, Reasons::UNCONFIGURED_AUTHORIZE);
+            }
+            $answer = ($this->authorize)($who, $mode, $session, null);
+            if (! ($answer === true || (is_array($answer) && ($answer['allow'] ?? null) === true))) {
+                $reason = is_array($answer) && is_string($answer['reason'] ?? null) && $answer['reason'] !== '' ? $answer['reason'] : Reasons::AUTHORIZE;
+
+                return CoworkResponse::refuse(403, $reason);
+            }
+            if ($this->store->countStarts($who->ref, $at - 60_000) >= $config['rate']['startsPerMinute']) {
+                return CoworkResponse::refuse(429, Reasons::RATE);
+            }
+            $participant = ['ref' => $who->ref];
+            foreach (['label' => $who->label, 'actingFor' => $who->actingFor] as $key => $value) {
+                if ($value !== null) {
+                    $participant[$key] = $value;
+                }
+            }
+            if (is_string($body['route'] ?? null)) {
+                $participant['route'] = $body['route'];
+            }
+            $state = SessionState::create($draft['id'], $draft['state'], $who->ref, [$participant], $at);
+            if ($who->attributes !== null) {
+                $state['participants'][$who->ref]['attributes'] = $who->attributes;
+            }
+            $this->store->write($state, self::snapshot($config), $at);
+            $events = [];
+            $actor = $who->actingFor !== null ? ['actingFor' => $who->actingFor] : [];
+            if ($mode === 'request') {
+                $events[] = ['type' => 'SessionRequested', 'session' => $state['id'], 'ref' => $who->ref, ...$actor, 'at' => $at];
+            }
+            $events[] = ['type' => 'PeerJoined', 'session' => $state['id'], 'ref' => $who->ref, ...$actor, 'at' => $at];
+            $this->emit($events);
+
+            return new CoworkResponse(201, ['session' => self::publicSession($state, $config)]);
+        });
+    }
+
+    public function sync(Request $request, string $id): CoworkResponse
+    {
+        return $this->guarded(function () use ($request, $id): CoworkResponse {
+            $who = $this->identifyOrRefuse($request);
+            if ($who instanceof CoworkResponse) {
+                return $who;
+            }
+            if ($this->config === null) {
+                return CoworkResponse::refuse(403, Reasons::UNCONFIGURED_CONFIG);
+            }
+            $state = preg_match(self::SESSION_ID, $id) === 1 ? $this->store->read($id) : null;
+            if ($state === null) {
+                return CoworkResponse::refuse(404, Reasons::UNKNOWN_SESSION);
+            }
+            if ($this->members === null) {
+                return CoworkResponse::refuse(403, Reasons::UNCONFIGURED_MEMBERS);
+            }
+            $session = Session::fromState($state);
+            if (($this->members)($session, $who) !== true) {
+                return CoworkResponse::refuse(403, Reasons::MEMBERSHIP);
+            }
+
+            return new CoworkResponse(200, ['session' => self::publicSession($state, $this->resolveConfig($session))]);
+        });
+    }
+
+    /** @param  array<string, mixed>  $body */
+    public function activate(Request $request, string $id, array $body = []): CoworkResponse
+    {
+        return $this->onSession($request, $id, fn (EngineHost $host, array $state, Participant $who): Result => Engine::evaluateActivate($host, $state, $this->opInput($who, $body['route'] ?? null)),
+            function (Result $result, array $config): CoworkResponse {
+                $this->broadcast('private-cowork.participant.'.$result->state['starter'], 'cowork.activated', ['session' => $result->state['id']]);
+                $this->broadcast('presence-cowork.session.'.$result->state['id'], 'cowork.session', self::publicSession($result->state, $config));
+
+                return new CoworkResponse(200, ['session' => self::publicSession($result->state, $config)]);
+            });
+    }
+
+    /** @param  array<string, mixed>  $body */
+    public function join(Request $request, string $id, array $body = []): CoworkResponse
+    {
+        return $this->onSession($request, $id, fn (EngineHost $host, array $state, Participant $who): Result => Engine::evaluateJoin($host, $state, $this->opInput($who, $body['route'] ?? null)));
+    }
+
+    public function consent(Request $request, string $id): CoworkResponse
+    {
+        return $this->onSession($request, $id, fn (EngineHost $host, array $state, Participant $who): Result => Engine::evaluateConsent($host, $state, $this->opInput($who)));
+    }
+
+    public function leave(Request $request, string $id): CoworkResponse
+    {
+        return $this->onSession($request, $id, fn (EngineHost $host, array $state, Participant $who): Result => Engine::evaluateLeave($host, $state, $this->opInput($who)), null, needsConfig: false);
+    }
+
+    public function end(Request $request, string $id): CoworkResponse
+    {
+        return $this->onSession($request, $id, fn (EngineHost $host, array $state, Participant $who): Result => Engine::evaluateEnd($host, $state, $this->opInput($who)));
+    }
+
+    /** @param  array<string, mixed>  $body  `target`: a ref, or null to stop following */
+    public function follow(Request $request, string $id, array $body): CoworkResponse
+    {
+        return $this->onSession($request, $id, fn (EngineHost $host, array $state, Participant $who): Result => Engine::evaluateFollow($host, $state, [...$this->opInput($who), 'target' => $body['target'] ?? null]));
+    }
+
+    /**
+     * Server routing: run the pipeline, then relay to everyone else on the
+     * presence channel. The sender comes from `identify`; nothing in the body
+     * can set it.
+     *
+     * @param  array<string, mixed>  $body  intent, view, revision, to, id, socketId
+     */
+    public function intent(Request $request, string $id, array $body): CoworkResponse
+    {
+        $envelope = [];
+
+        return $this->onSession($request, $id, function (EngineHost $host, array $state, Participant $who) use ($body, &$envelope): Result {
+            $at = $this->now();
+            $envelope = [
+                'id' => is_string($body['id'] ?? null) && preg_match(self::SESSION_ID, $body['id']) === 1 ? $body['id'] : Ulid::generate($at),
+                'session' => $state['id'],
+                'from' => $who->ref,
+            ];
+            foreach (['to', 'view', 'revision'] as $key) {
+                if (array_key_exists($key, $body)) {
+                    $envelope[$key] = $body[$key];
+                }
+            }
+            $envelope['at'] = $at;
+
+            return Engine::evaluateIntent($host, $state, [
+                'from' => $who->ref,
+                'actingFor' => $who->actingFor,
+                'envelope' => $envelope,
+                'intent' => $body['intent'] ?? null,
+                'now' => $at,
+            ]);
+        }, function (Result $result) use ($request, $id, $body, &$envelope): CoworkResponse {
+            $socket = $request->header('X-Socket-ID') ?? ($body['socketId'] ?? null);
+            $socket = is_string($socket) && preg_match('/^\d+\.\d+$/D', $socket) === 1 ? $socket : null;
+            $this->broadcast("presence-cowork.session.{$id}", 'cowork.intent', [...$envelope, 'intent' => $body['intent']], $socket);
+
+            return new CoworkResponse(202, ['id' => $envelope['id'], 'revision' => $result->state['revision']]);
+        });
+    }
+
+    /**
+     * Channel auth for `presence-cowork.session.{id}` (identify + members + a
+     * live participant; the member payload comes from the server) and
+     * `private-cowork.participant.{ref}` (only that ref), signed for the default
+     * broadcaster. Works for anonymous participants too: it asks `identify`,
+     * never a Laravel guard.
+     */
+    public function authorizeChannel(Request $request, mixed $socketId, mixed $channel): CoworkResponse
+    {
+        return $this->guarded(function () use ($request, $socketId, $channel): CoworkResponse {
+            $who = $this->identifyOrRefuse($request);
+            if ($who instanceof CoworkResponse) {
+                return $who;
+            }
+            if (! is_string($socketId) || preg_match('/^\d+\.\d+$/D', $socketId) !== 1 || ! is_string($channel)) {
+                return CoworkResponse::refuse(422, 'cowork.invalid.request');
+            }
+            $decision = $this->channelDecision($who, $channel);
+            if ($decision instanceof CoworkResponse) {
+                return $decision;
+            }
+            $connection = (string) $this->settings->get('broadcasting.default');
+            $key = $this->settings->get("broadcasting.connections.{$connection}.key");
+            $secret = $this->settings->get("broadcasting.connections.{$connection}.secret");
+            if (! is_string($key) || $key === '' || ! is_string($secret) || $secret === '') {
+                return CoworkResponse::refuse(503, 'cowork.unconfigured.broadcasting');
+            }
+            $data = $decision === true ? null : json_encode($decision, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+
+            return new CoworkResponse(200, PusherSignature::sign($key, $secret, $socketId, $channel, $data));
+        });
+    }
+
+    /**
+     * For Laravel's own `/broadcasting/auth`: the presence member info, `true`
+     * for the participant's private channel, or `false`. Never throws.
+     *
+     * @return array<string, mixed>|bool
+     */
+    public function channelMember(Request $request, string $channel): array|bool
+    {
+        try {
+            $who = $this->identifyOrRefuse($request);
+            if ($who instanceof CoworkResponse) {
+                return false;
+            }
+            $decision = $this->channelDecision($who, $channel);
+
+            return match (true) {
+                $decision === true => true,
+                is_array($decision) => $decision['user_info'],
+                default => false,
+            };
+        } catch (Throwable) {
+            return false;
+        }
+    }
+
+    /** @return CoworkResponse|true|array{user_id: string, user_info: array<string, mixed>} */
+    private function channelDecision(Participant $who, string $channel): CoworkResponse|bool|array
+    {
+        if (preg_match(self::PARTICIPANT_CHANNEL, $channel, $match) === 1) {
+            return $match[1] === $who->ref ? true : CoworkResponse::refuse(403, Reasons::CHANNEL);
+        }
+        if (preg_match(self::SESSION_CHANNEL, $channel, $match) !== 1) {
+            return CoworkResponse::refuse(403, Reasons::CHANNEL);
+        }
+        if ($this->config === null) {
+            return CoworkResponse::refuse(403, Reasons::UNCONFIGURED_CONFIG);
+        }
+        $state = $this->store->read($match[1]);
+        if ($state === null) {
+            return CoworkResponse::refuse(404, Reasons::UNKNOWN_SESSION);
+        }
+        if ($state['state'] === 'ended') {
+            return CoworkResponse::refuse(410, Reasons::ENDED);
+        }
+        if ($this->members === null) {
+            return CoworkResponse::refuse(403, Reasons::UNCONFIGURED_MEMBERS);
+        }
+        $joined = $state['participants'][$who->ref] ?? null;
+        if ($joined === null || ($this->members)(Session::fromState($state), $who) !== true) {
+            return CoworkResponse::refuse(403, Reasons::MEMBERSHIP);
+        }
+        $info = ['ref' => (string) $joined['ref']];
+        if (isset($joined['label'])) {
+            $info['label'] = $joined['label'];
+        }
+        $info['view'] = (string) $joined['ref'];
+        $info['route'] = $joined['route'];
+
+        return ['user_id' => (string) $joined['ref'], 'user_info' => $info];
+    }
+
+    // -------------------------------------------------------------------
+    // Internals
+    // -------------------------------------------------------------------
+
+    /**
+     * identify -> config bound -> load (locked) -> run -> write on allow -> emit.
+     *
+     * @param  Closure(EngineHost, array<string, mixed>, Participant): Result  $run
+     * @param  (Closure(Result, array<string, mixed>): CoworkResponse)|null  $after
+     */
+    private function onSession(Request $request, string $id, Closure $run, ?Closure $after = null, bool $needsConfig = true): CoworkResponse
+    {
+        return $this->guarded(function () use ($request, $id, $run, $after, $needsConfig): CoworkResponse {
+            $who = $this->identifyOrRefuse($request);
+            if ($who instanceof CoworkResponse) {
+                return $who;
+            }
+            if ($needsConfig && $this->config === null) {
+                return CoworkResponse::refuse(403, Reasons::UNCONFIGURED_CONFIG);
+            }
+            if (preg_match(self::SESSION_ID, $id) !== 1) {
+                return CoworkResponse::refuse(404, Reasons::UNKNOWN_SESSION);
+            }
+            [$response, $events, $broadcast] = $this->store->locked($id, function () use ($id, $run, $after, $who): array {
+                $state = $this->store->read($id);
+                if ($state === null) {
+                    return [CoworkResponse::refuse(404, Reasons::UNKNOWN_SESSION), [], null];
+                }
+                $host = $this->hostFor($state, $who);
+                $result = $run($host, $state, $who);
+                if (! $result->allowed()) {
+                    $decision = $result->decision;
+                    $extra = isset($decision['blockedUntil']) ? ['blockedUntil' => $decision['blockedUntil']] : [];
+
+                    return [CoworkResponse::refuse($decision['status'], $decision['reason'], $extra), [], null];
+                }
+                $config = $host->config ?? Config::resolve();
+                if ($result->state !== $state) {
+                    $this->store->write($result->state, self::snapshot($config), $this->now());
+                }
+
+                return [null, $result->events, [$result, $config]];
+            });
+            if ($response instanceof CoworkResponse) {
+                return $response;
+            }
+            // Committed: emit and broadcast only after the transaction is in.
+            $this->emit($events);
+            [$result, $config] = $broadcast;
+            if ($after !== null) {
+                return $after($result, $config);
+            }
+            $public = self::publicSession($result->state, $config);
+            $this->broadcast("presence-cowork.session.{$id}", 'cowork.session', $public);
+
+            return new CoworkResponse(200, ['session' => $public]);
+        });
+    }
+
+    /** @param  array<string, mixed>  $state */
+    private function hostFor(array $state, Participant $caller): EngineHost
+    {
+        $session = Session::fromState($state);
+        $config = $this->config !== null ? $this->resolveConfig($session) : null;
+        $participantFor = static function (string $ref) use ($caller, $state): Participant {
+            if ($ref === $caller->ref) {
+                return $caller;
+            }
+            $stored = $state['participants'][$ref] ?? null;
+
+            return $stored === null ? new Participant($ref) : new Participant($ref, $stored['label'] ?? null, $stored['attributes'] ?? null, $stored['actingFor'] ?? null);
+        };
+        $members = $this->members;
+        $authorize = $this->authorize;
+        $predicates = $this->predicates;
+
+        return new EngineHost(
+            identity: true,
+            config: $config,
+            members: $members === null ? null : static fn (string $ref): mixed => $members($session, $participantFor($ref)),
+            authorize: $authorize === null ? null : static fn (string $ref, string $ability, ?array $intent): mixed => $authorize($participantFor($ref), $ability, $session, $intent),
+            predicate: static fn (string $name, $ctx, array $intent): ?bool => isset($predicates[$name]) ? $predicates[$name]($ctx, $intent) === true : null,
+            middleware: $this->stack,
+        );
+    }
+
+    /** @return array<string, mixed> */
+    private function resolveConfig(Session $session): array
+    {
+        $input = ($this->config)($session);
+        if (! is_array($input)) {
+            throw new InvalidArgumentException('A cowork config resolver must return an array.');
+        }
+
+        return Config::resolve($input);
+    }
+
+    private function identifyOrRefuse(Request $request): Participant|CoworkResponse
+    {
+        if ($this->identify === null) {
+            return CoworkResponse::refuse(403, Reasons::UNCONFIGURED_IDENTITY);
+        }
+        $who = ($this->identify)($request);
+        if (is_array($who)) {
+            $who = Participant::fromArray($who);
+        }
+        if (! $who instanceof Participant || ! Wire::isRef($who->ref)) {
+            return CoworkResponse::refuse(401, Reasons::UNIDENTIFIED);
+        }
+
+        return $who;
+    }
+
+    /** @return array<string, mixed> */
+    private function opInput(Participant $who, mixed $route = null): array
+    {
+        $input = ['from' => $who->ref, 'now' => $this->now()];
+        foreach (['actingFor' => $who->actingFor, 'label' => $who->label, 'attributes' => $who->attributes] as $key => $value) {
+            if ($value !== null) {
+                $input[$key] = $value;
+            }
+        }
+        if (is_string($route)) {
+            $input['route'] = $route;
+        }
+
+        return $input;
+    }
+
+    /** @param  Closure(): CoworkResponse  $work */
+    private function guarded(Closure $work): CoworkResponse
+    {
+        try {
+            return $work();
+        } catch (Throwable) {
+            return CoworkResponse::refuse(500, Reasons::HOST_ERROR);
+        }
+    }
+
+    /** @param  list<array<string, mixed>>  $events */
+    private function emit(array $events): void
+    {
+        foreach ($events as $event) {
+            try {
+                $this->events->dispatch(CoworkEventBase::fromEngine($event));
+            } catch (Throwable) {
+                // A host listener cannot undo a committed change.
+            }
+        }
+    }
+
+    /** @param  array<string, mixed>  $payload */
+    private function broadcast(string $channel, string $event, array $payload, ?string $exceptSocket = null): void
+    {
+        if (! $this->settings->get('fancy-cowork.broadcast', true) || ! $this->container->bound(BroadcastFactory::class)) {
+            return;
+        }
+        try {
+            $this->container->make(BroadcastFactory::class)->connection()->broadcast([$channel], $event, [...$payload, 'socket' => $exceptSocket]);
+        } catch (Throwable) {
+            // The change is committed; a client that missed it re-syncs with GET.
+        }
+    }
+
+    private function now(): int
+    {
+        return $this->clock !== null ? (int) ($this->clock)() : (int) floor(microtime(true) * 1000);
+    }
+
+    /**
+     * What a participant may see of a session: never rate counters or ranked timings.
+     *
+     * @param  array<string, mixed>  $state
+     * @param  array<string, mixed>  $config
+     * @return array<string, mixed>
+     */
+    public static function publicSession(array $state, array $config): array
+    {
+        $participants = [];
+        foreach ($state['participants'] as $p) {
+            $row = ['ref' => (string) $p['ref']];
+            if (isset($p['label'])) {
+                $row['label'] = $p['label'];
+            }
+            if (isset($p['actingFor'])) {
+                $row['actingFor'] = $p['actingFor'];
+            }
+            $participants[] = [...$row, 'route' => $p['route'], 'revision' => $p['revision'], 'follows' => $p['follows']];
+        }
+        $views = [];
+        if (($config['control']['mode'] ?? null) === 'baton') {
+            foreach (SessionState::refs($state) as $ref) {
+                $views[$ref] = SessionState::holderOf($state, $ref);
+            }
+        }
+
+        return [
+            'id' => $state['id'],
+            'state' => $state['state'],
+            'starter' => $state['starter'],
+            'revision' => $state['revision'],
+            'consent' => $config['consent'],
+            'consented' => $state['consented'],
+            'routing' => $config['routing'],
+            'control' => ['mode' => $config['control']['mode'] ?? 'baton', 'views' => $views === [] ? new \stdClass : $views],
+            'participants' => $participants,
+        ];
+    }
+
+    /**
+     * A JSON-safe copy of a config: a host rank function is recorded as `host`.
+     *
+     * @param  array<string, mixed>  $config
+     * @return array<string, mixed>
+     */
+    private static function snapshot(array $config): array
+    {
+        if (isset($config['control']['rank']) && $config['control']['rank'] instanceof Closure) {
+            $config['control']['rank'] = 'host';
+        }
+        array_walk_recursive($config, static function (mixed &$value): void {
+            if ($value instanceof Closure) {
+                $value = 'host';
+            }
+        });
+
+        return $config;
+    }
+}

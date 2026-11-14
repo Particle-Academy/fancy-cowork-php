@@ -1,0 +1,215 @@
+# particle-academy/fancy-cowork
+
+Generic co-working sessions for Laravel. Several people (and agents) share live UI:
+one person drives another's view, several share one space, a support rep takes over an
+anonymous visitor's request, or editors work on different pages of one document at the
+same time. Peers exchange **intents** (visit, scroll, field, focus, click, submit,
+control), never the DOM, so each peer runs its own app under its own server session.
+
+This is the PHP leg. The Node twin is
+[`@particle-academy/fancy-cowork`](https://github.com/Particle-Academy/fancy-cowork-js)
+(same contracts, same wire contract, held together by the shared fixtures in
+`conformance/cowork-v1.json`). The browser side (`useCoworkSession`, presence, cursors,
+the session indicator) is in
+[`@particle-academy/agent-integrations`](https://github.com/Particle-Academy/agent-integrations).
+
+**Pre-1.0.** Breaking changes land in minor releases; read the changelog before upgrading.
+
+## What it is not
+
+- **Not chat.** There are no conversations, messages, contact lists or message storage.
+  A host that wants its own messages carried over a session gets one opaque `app` intent
+  (`topic` + `payload`), size- and rate-limited, which the package never stores, renders
+  or interprets.
+- **Not a user model.** There is no user, org or role anywhere in the package. A
+  participant is an opaque string ref your resolvers hand it. No table has a foreign key
+  to any of yours.
+- **Not allowed by default.** Every host contract starts unbound, and an unbound contract
+  refuses with a named reason (`cowork.unconfigured.identity`, ...). A fresh install does
+  nothing until you decide who may do what. `php artisan cowork:doctor` lists what is
+  unbound.
+
+## Install
+
+```bash
+composer require particle-academy/fancy-cowork
+php artisan migrate
+php artisan cowork:doctor     # lists every unbound contract; exits 1 until all are bound
+```
+
+PHP 8.4+, Laravel 13. No third-party runtime dependencies: only `illuminate/*`.
+
+## Bind the host contracts
+
+In a service provider's `boot()`:
+
+```php
+use FancyCowork\Facades\Cowork;
+use FancyCowork\Participant;
+use FancyCowork\Session;
+use Illuminate\Http\Request;
+
+Cowork::identify(function (Request $request): ?Participant {
+    $account = $request->user();                       // YOUR auth, whatever it is
+    if (! $account) {
+        return null;                                  // 401 cowork.unidentified
+    }
+
+    return new Participant(
+        ref: 'member:'.$account->getKey(),
+        label: $account->name,
+        // When your own auth runs one person inside another's account, say so.
+        // The package records both refs on every event and interprets neither.
+        actingFor: session('acting_for_ref'),
+    );
+});
+
+Cowork::members(fn (Session $session, Participant $p): bool => /* may $p be in $session? */ true);
+
+Cowork::authorize(function (Participant $p, string $ability, Session $session, ?array $intent): bool|array {
+    // abilities: start, request, activate, join, end, follow, drive, intent:<kind>, view:<ref>
+    return in_array($ability, ['start', 'join', 'end', 'intent:scroll', 'view:'.$p->ref], true);
+});
+
+Cowork::config(fn (Session $session): array => [
+    'consent' => 'notify',                            // none | notify | accept
+    'control' => ['mode' => 'baton'],                 // free | ranked | baton
+    'routing' => 'server',                            // server | direct
+    'limits' => ['mask' => ['card.*'], 'viewOnly' => ['terms.*']],
+]);
+```
+
+**Only a literal `true` (or `['allow' => true]`) allows.** Anything else, including a
+truthy `1` or `'yes'`, refuses. Return `['allow' => false, 'reason' => 'yours.reason']` to
+name your own refusal. A resolver that throws answers `500 cowork.host.error` and nothing
+is written.
+
+### Config
+
+Anything the config resolver omits takes the default; every limit is configurable.
+
+| Key | Default | |
+|---|---|---|
+| `consent` | `notify` | `none` admits at once; `notify` admits at once and sets the indicator flag; `accept` refuses every join but the subject's until the subject consents |
+| `subject` | the starter | whose consent `accept` waits for |
+| `control` | `['mode' => 'baton']` | `free` (last writer, revision-guarded), `ranked` (`rank` map or `fn (string $ref): int`, `idleMs` 3000), `baton` (request / grant / release / revoke) |
+| `routing` | `server` | see below |
+| `limits` | none | `allow` / `deny` rules `{kinds, handles, routes, when}` (deny wins), `mask`, `viewOnly` handle globs |
+| `rate` | 10 intents/s, 1 visit/s, 30 app/min, 5 starts/min | per sender |
+| `size` | 8 KB per intent, 16 KB per app payload | |
+| `maxParticipants` | 16 | |
+
+`when` names a predicate: `Cowork::predicates(['afterHours' => fn ($ctx, array $intent): bool => ...])`.
+A `when` naming a predicate you never defined fails closed.
+
+### Middleware
+
+One contract, `(PipelineContext $ctx, array $intent, Closure $next): array`, as a closure
+or a class implementing `FancyCowork\Contracts\IntentMiddleware`. The shipped defaults, in
+order, each removable by leaving it out:
+
+`membership`, `authorize`, `payloadSize`, `sameOrigin`, `masking`, `limits`, `revision`,
+`control`, `rateLimit`, `audit`.
+
+```php
+Cowork::middleware(fn (array $defaults): array => [MyTenantFence::class, ...$defaults, MyContentFilter::class]);
+```
+
+`authorize` cannot be configured to allow by default. It can only be removed, explicitly.
+An unknown default name throws when you set the stack.
+
+## Routes
+
+Under `fancy-cowork.prefix` (`cowork`), behind `fancy-cowork.middleware` (`['web']`):
+
+| | |
+|---|---|
+| `POST sessions` | `{mode: start\|request, route?}`: start a live session (ability `start`) or a requested one (ability `request`); 201 |
+| `GET sessions/{id}` | re-sync after a reconnect: state, revision, views, control |
+| `POST sessions/{id}/activate` | a requested session goes live (ability `activate`); the requester hears on `private-cowork.participant.{ref}` |
+| `POST sessions/{id}/join` / `leave` / `consent` / `end` | |
+| `POST sessions/{id}/follow` | `{target: ref\|null}` (ability `follow`) |
+| `POST sessions/{id}/intents` | `{intent, view?, revision?, to?, id?}`: the pipeline, then a broadcast to everyone else; 202 |
+| `POST auth` | channel auth: `{socket_id, channel_name}`, signed for the default broadcaster |
+
+Refusals are `{reason, blockedUntil?}` with 401 / 403 / 404 / 409 / 410 / 413 / 422 / 429 /
+500. Every response is `Cache-Control: no-store`.
+
+## Routing: server or direct
+
+- **server**: intents go to `POST sessions/{id}/intents`, the pipeline runs on the server,
+  and the intent is broadcast on `presence-cowork.session.{id}` to everyone but the sender's
+  socket (`X-Socket-ID`). The sender is always the one `identify` returned; nothing in a
+  body can set it.
+- **direct**: intents travel peer to peer over presence whispers (Reverb client events must
+  be enabled: `accept_client_events_from`). The same pipeline runs at the sender and again
+  at every receiver, in the browser (agent-integrations), because there is no server in
+  between.
+
+Channels: `presence-cowork.session.{id}` (identify + `members()` + a live participant; the
+member payload comes from the server) and `private-cowork.participant.{ref}` (only that
+ref). `POST {prefix}/auth` works for anonymous participants too, because it asks your
+`identify`, not a Laravel guard. Hosts on Laravel's own `/broadcasting/auth` get the same
+channels registered (`fancy-cowork.channels`).
+
+## Audit
+
+Events, always: `SessionRequested`, `SessionActivated`, `PeerJoined`, `PeerLeft`,
+`ConsentGiven`, `ControlChanged`, `IntentRelayed`, `SessionEnded`, each carrying `ref` and
+`actingFor`. Listen on `FancyCowork\Contracts\CoworkEvent` for all of them. No event
+carries an intent's value or an app payload.
+
+**Optional:** set `fancy-cowork.audit.table` to `true` and run the migration in
+`database/migrations/audit` to have every event written to `cowork_audit`. Off by default.
+
+## Optional: signed guest tokens
+
+For the anonymous support case. The package has no guest concept; this is one `identify`
+resolver you may bind, or ignore.
+
+```php
+use FancyCowork\GuestTokens;
+
+$token = app(GuestTokens::class)->issue();            // give it to the visitor's page
+
+Cowork::identify(app(GuestTokens::class)->resolver(
+    fallback: fn (Request $r) => /* your signed-in participants */ null,
+));
+```
+
+A token is HMAC-SHA256-signed with a key derived from `app.key`, compared in constant
+time, expires after `fancy-cowork.guest.ttl` seconds (7200), is read from the
+`X-Cowork-Guest` header, and resolves to the ref `guest:<id>`. It proves the token came
+from your app and nothing else about the visitor.
+
+## Security model
+
+**Default deny is the main control.** Masking is applied at the sender: a masked value
+never leaves the browser. Receivers and the server also refuse `field` into masked or
+view-only handles.
+
+A malicious participant can see every unmasked thing on a view it is allowed to see, act
+within what your policy grants (in `free` mode, fight for fields), and send `app` intents
+within the limits. It cannot read a masked value, act in a view-only region, make another
+participant perform a side effect, send anyone off-origin, claim another ref, join without
+passing `members()`, stay after the session ends, or reach your `app` handler with an
+oversized or rate-exceeding payload.
+
+**Residual risks:** in `direct` mode, enforcement is only as good as the receiver's
+pipeline, and a peer can forge frames under its own socket. `app` payloads are untrusted
+data for you to validate. In `free` control there is only last-writer-wins. Masking hides
+values from peers; it does not hide them from someone who can load the page under the same
+account.
+
+## Testing
+
+```bash
+composer install
+vendor/bin/pest           # includes every case in conformance/cowork-v1.json
+php tests/sabotage.php    # breaks one clause at a time; every mutation must be caught
+php tests/lint.php
+```
+
+## Licence
+
+MIT.
