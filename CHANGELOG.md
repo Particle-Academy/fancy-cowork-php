@@ -10,6 +10,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-11-14
+
 Council change **CC-fancy-0037** (owner approved 2026-11-13): generic co-working
 sessions. The first release. Generic co-working, not any one consumer's spec; no chat; no
 assumptions about the host's models.
