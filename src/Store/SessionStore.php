@@ -82,6 +82,8 @@ final class SessionStore
             'revision' => (int) $row->revision,
             'createdAt' => (int) $row->created_ms,
             'endedAt' => $row->ended_ms === null ? null : (int) $row->ended_ms,
+            // A session that ended before the column existed reads as an explicit end.
+            'endReason' => isset($row->end_reason) ? (string) $row->end_reason : ((string) $row->state === 'ended' ? 'ended' : null),
             'participants' => $participants,
             'control' => self::decodeMap($row->control),
             'last' => self::decodeMap($row->last),
@@ -109,6 +111,7 @@ final class SessionStore
             'rate' => self::encodeMap($state['rate']),
             'created_ms' => $state['createdAt'],
             'ended_ms' => $state['endedAt'],
+            'end_reason' => $state['endReason'] ?? null,
             'updated_at' => gmdate('Y-m-d H:i:s', intdiv($now, 1000)),
         ];
         if ($db->table('cowork_sessions')->where('id', $state['id'])->exists()) {

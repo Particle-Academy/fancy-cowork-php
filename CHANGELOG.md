@@ -26,6 +26,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (`2026_11_15_000000_add_last_seen_to_cowork_participants`, one nullable column).
   Before this, a closed browser left its participant, and the session, live forever.
 
+- **`session.endReason` on the re-sync** (`GET sessions/{id}`): `ended` (an explicit end),
+  `starter-left` or `empty`, and `null` while live, so a client can tell why a session
+  ended without reading the audit events. Stored in a new nullable `end_reason` column
+  (migration `2026_11_15_000100_add_end_reason_to_cowork_sessions`; run it). A session
+  that ended before the column existed reads as `ended`.
+- **The publisher retries a 429** from the socket server's events API after its
+  `Retry-After` (seconds or an HTTP date), at most 2 retries and never more than 3 s of
+  waiting in total, then `BroadcastException` as before. Genie's WebSockets service
+  rate-limits event publishing. Other refusals are not retried.
+
 ### Changed
 
 - **One ref, one identity.** A `join`, intent or heartbeat that presents a live
@@ -37,6 +47,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   user's ref: return the ADMIN's ref there, with the user's as `actingFor` (README, "ref is
   the person at the keyboard"). The same person in a second tab (the same `actingFor`) is
   still allowed.
+- **The publish body is ASCII-only JSON** (non-ASCII escaped as `\uXXXX`), with
+  `body_md5` over exactly those bytes. Some Pusher-protocol servers, Genie's WebSockets
+  service among them, read the body as Latin-1, so raw UTF-8 arrived garbled. Nothing to
+  do: receivers decode the same text.
 
 ## [0.3.0] - 2026-11-15
 

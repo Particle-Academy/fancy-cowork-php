@@ -301,6 +301,7 @@ final class Engine
         $next = $state;
         $next['state'] = 'ended';
         $next['endedAt'] = $input['now'];
+        $next['endReason'] = 'ended';
         $next['revision']++;
 
         return new Result(Reasons::allow(), $next, [self::event('SessionEnded', $next['id'], $input)]);

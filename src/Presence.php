@@ -133,6 +133,7 @@ final class Presence
         }
         $state['state'] = 'ended';
         $state['endedAt'] = $now;
+        $state['endReason'] = $reason;
         $state['revision']++;
 
         return [

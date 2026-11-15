@@ -234,8 +234,11 @@ nor `laravel/reverb`. Point your existing Pusher- or Reverb-shaped connection at
 A host already running Reverb keeps working either way: it is the same protocol. The
 driver refuses a payload over the protocol's 10 KB limit before sending it, sends at
 most 100 channels per request, excludes the sender's socket, and raises
-`BroadcastException` on a non-2xx answer, never with the secret in it. Laravel's HTTP
-client needs Guzzle, which every `laravel/framework` app already has.
+`BroadcastException` on a non-2xx answer, never with the secret in it. A `429` (the
+events API rate-limiting, as Genie's WebSockets service does) is retried after its
+`Retry-After`, at most twice and never more than 3 s of waiting in total. The body is
+ASCII-only JSON, because some servers read it as Latin-1. Laravel's HTTP client needs
+Guzzle, which every `laravel/framework` app already has.
 
 **Connections are reused.** The driver keeps ONE Guzzle handler for its lifetime, so a
 publish after the first in the same PHP process skips the TLS handshake. Measured
@@ -277,7 +280,8 @@ $schedule->command('cowork:prune')->everyMinute();
 
 `GET sessions/{id}` gives each participant `lastSeen` and `online`. The sweep runs before
 the answer, so every participant listed is online by construction; `lastSeen` is the
-information.
+information. Once a session has ended, `session.endReason` says why: `ended` (an
+explicit end), `starter-left` or `empty`; it is `null` while the session is live.
 
 ## Audit
 

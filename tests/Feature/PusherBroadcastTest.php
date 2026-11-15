@@ -197,3 +197,93 @@ it('answers Laravel channel auth with the protocol signature', function (): void
     $channelData = json_encode(['user_id' => 'a', 'user_info' => ['id' => 'a', 'ref' => 'a', 'label' => 'A']], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
     expect($answer)->toBe(PusherSignature::sign('app-key', 'app-secret', '1.2', 'presence-cowork.session.s1', $channelData));
 });
+
+/*
+ * Genie's WebSockets service rate-limits its events API (31 of 164 sends refused
+ * in a fast burst) and reads a publish body as Latin-1. So the client retries a
+ * 429 after Retry-After, bounded, and sends ASCII-only JSON.
+ */
+
+/** A client over a faked factory, with a sleeper that records instead of waiting. */
+function retryingClient(HttpFactory $http, array &$slept): PusherHttpClient
+{
+    return new PusherHttpClient(
+        fn (): HttpFactory => $http,
+        'app-id', 'app-key', 'app-secret', 'http://127.0.0.1:6001',
+        sleep: function (int $ms) use (&$slept): void {
+            $slept[] = $ms;
+        },
+    );
+}
+
+it('retries a 429 after Retry-After seconds and then succeeds', function (): void {
+    coworkApp();
+    $http = new HttpFactory;
+    $http->fakeSequence()->push('{}', 429, ['Retry-After' => '1'])->push('{}', 200);
+    $slept = [];
+
+    retryingClient($http, $slept)->trigger(['presence-x'], 'e', ['n' => 1]);
+
+    expect($slept)->toBe([1000])->and($http->recorded())->toHaveCount(2);
+});
+
+it('reads an HTTP-date Retry-After', function (): void {
+    coworkApp();
+    $http = new HttpFactory;
+    $http->fakeSequence()->push('{}', 429, ['Retry-After' => gmdate('D, d M Y H:i:s', time() - 5).' GMT'])->push('{}', 200);
+    $slept = [];
+
+    retryingClient($http, $slept)->trigger(['presence-x'], 'e', ['n' => 1]);
+
+    expect($slept)->toBe([0])->and($http->recorded())->toHaveCount(2);
+});
+
+it('gives up after two retries with a BroadcastException', function (): void {
+    coworkApp();
+    $http = new HttpFactory;
+    $http->fakeSequence()->push('{}', 429, ['Retry-After' => '0'])->push('{}', 429, ['Retry-After' => '0'])->push('{}', 429, ['Retry-After' => '0'])->push('{}', 200);
+    $slept = [];
+
+    $client = retryingClient($http, $slept); // built outside: an arrow fn captures $slept by value
+    expect(fn () => $client->trigger(['presence-x'], 'e', ['n' => 1]))
+        ->toThrow(BroadcastException::class, '429');
+    expect($http->recorded())->toHaveCount(3);
+});
+
+it('never waits more than 3 s in total: a long Retry-After is not waited out', function (): void {
+    coworkApp();
+    $http = new HttpFactory;
+    $http->fakeSequence()->push('{}', 429, ['Retry-After' => '2'])->push('{}', 429, ['Retry-After' => '2'])->push('{}', 200);
+    $slept = [];
+
+    $client = retryingClient($http, $slept); // built outside: an arrow fn captures $slept by value
+    expect(fn () => $client->trigger(['presence-x'], 'e', ['n' => 1]))
+        ->toThrow(BroadcastException::class);
+    expect(array_sum($slept))->toBeLessThanOrEqual(3000)->and($slept)->toBe([2000]);
+});
+
+it('does not retry other refusals', function (): void {
+    coworkApp();
+    $http = new HttpFactory;
+    $http->fakeSequence()->push('{}', 401)->push('{}', 200);
+    $slept = [];
+
+    $client = retryingClient($http, $slept); // built outside: an arrow fn captures $slept by value
+    expect(fn () => $client->trigger(['presence-x'], 'e', ['n' => 1]))->toThrow(BroadcastException::class, '401');
+    expect($slept)->toBe([])->and($http->recorded())->toHaveCount(1);
+});
+
+it('sends an ASCII-only body, with body_md5 over exactly those bytes', function (): void {
+    coworkApp(['broadcasting.default' => 'pusherish', 'broadcasting.connections.pusherish' => pusherConnection()]);
+    [$http] = fakeHttp();
+    $text = 'caf'."\u{00E9}\u{00A0}".'ok';
+
+    app(BroadcastManager::class)->connection()->broadcast(['presence-x'], 'e', ['text' => $text]);
+
+    $request = sentRequests($http)[0];
+    $body = $request->body();
+    expect(preg_match('/[^\x00-\x7F]/', $body))->toBe(0);
+    expect(json_decode(json_decode($body, true)['data'], true)['text'])->toBe($text);
+    parse_str((string) parse_url($request->url(), PHP_URL_QUERY), $query);
+    expect($query['body_md5'])->toBe(md5($body));
+});

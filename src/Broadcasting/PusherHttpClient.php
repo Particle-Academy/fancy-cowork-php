@@ -25,6 +25,12 @@ final class PusherHttpClient
     /** The protocol's per-request channel limit. */
     public const int MAX_CHANNELS = 100;
 
+    /** A 429 is retried at most this many times per request... */
+    public const int MAX_RETRIES = 2;
+
+    /** ...and never waits more than this in total (ms); a longer Retry-After is not waited out. */
+    public const int MAX_RETRY_WAIT_MS = 3000;
+
     /**
      * The ONE Guzzle handler every publish goes through, built on the first. A
      * handler keeps cURL's easy handles, and with them the open connection and the
@@ -51,6 +57,8 @@ final class PusherHttpClient
         private readonly int $timeout = 5,
         private readonly ?Closure $clock = null,
         private readonly ?Closure $handlerFactory = null,
+        /** Sleeps for the given milliseconds before a retry; default usleep. Tests record instead. */
+        private readonly ?Closure $sleep = null,
     ) {}
 
     /**
@@ -119,11 +127,28 @@ final class PusherHttpClient
         foreach (array_chunk(array_values($channels), self::MAX_CHANNELS) as $chunk) {
             $body = json_encode(
                 ['name' => $event, 'channels' => $chunk, 'data' => $data, ...($socket !== null ? ['socket_id' => $socket] : [])],
-                JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE,
+                // ASCII-only (non-ASCII escaped as \uXXXX): some Pusher-protocol servers,
+                // Genie's WebSockets service among them, read the body as Latin-1, so raw
+                // UTF-8 arrives garbled. body_md5 is signed over exactly these bytes.
+                JSON_UNESCAPED_SLASHES,
             );
             if ($body === false) {
                 throw new BroadcastException("fancy-pusher: the request for `{$event}` cannot be encoded.");
             }
+            $this->publish($event, $path, $body);
+        }
+    }
+
+    /**
+     * One signed POST, retrying a 429 after its Retry-After (seconds or an HTTP
+     * date), at most MAX_RETRIES times and never waiting more than
+     * MAX_RETRY_WAIT_MS in total. Each attempt is signed afresh, so its
+     * auth_timestamp is current. Any other refusal is not retried.
+     */
+    private function publish(string $event, string $path, string $body): void
+    {
+        $waited = 0;
+        for ($attempt = 0; ; $attempt++) {
             $now = $this->clock !== null ? ($this->clock)() : time();
             $query = PusherProtocol::eventQuery($this->key, $this->secret, $path, $body, $now);
 
@@ -138,9 +163,32 @@ final class PusherHttpClient
             } catch (Throwable $e) {
                 throw new BroadcastException("fancy-pusher: publishing `{$event}` failed: ".$e::class.'.');
             }
-            if (! $response->successful()) {
-                throw new BroadcastException("fancy-pusher: publishing `{$event}` was refused with HTTP {$response->status()}.");
+            if ($response->successful()) {
+                return;
             }
+            if ($response->status() === 429 && $attempt < self::MAX_RETRIES) {
+                $wait = $this->retryAfterMs($response->header('Retry-After'), $now);
+                if ($waited + $wait <= self::MAX_RETRY_WAIT_MS) {
+                    $this->sleep !== null ? ($this->sleep)($wait) : usleep($wait * 1000);
+                    $waited += $wait;
+
+                    continue;
+                }
+            }
+
+            throw new BroadcastException("fancy-pusher: publishing `{$event}` was refused with HTTP {$response->status()}.");
         }
+    }
+
+    /** Retry-After as milliseconds: delta-seconds or an HTTP date; 1 s when absent or unreadable. */
+    private function retryAfterMs(string $header, int $now): int
+    {
+        $header = trim($header);
+        if ($header !== '' && ctype_digit($header)) {
+            return (int) $header * 1000;
+        }
+        $at = $header === '' ? false : strtotime($header);
+
+        return $at === false ? 1000 : max(0, $at - $now) * 1000;
     }
 }

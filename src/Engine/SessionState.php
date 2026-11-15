@@ -37,6 +37,7 @@ final class SessionState
             'revision' => 0,
             'createdAt' => $now,
             'endedAt' => null,
+            'endReason' => null,
             'participants' => $joined,
             'control' => [],
             'last' => [],

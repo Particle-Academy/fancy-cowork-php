@@ -740,6 +740,8 @@ final class CoworkManager
         return [
             'id' => $state['id'],
             'state' => $state['state'],
+            // Why it ended ('ended', 'starter-left', 'empty'); null while live.
+            'endReason' => $state['state'] === 'ended' ? (string) ($state['endReason'] ?? 'ended') : null,
             'starter' => $state['starter'],
             'revision' => $state['revision'],
             'consent' => $config['consent'],
