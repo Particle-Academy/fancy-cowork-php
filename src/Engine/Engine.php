@@ -189,7 +189,11 @@ final class Engine
             return self::refused($state, $checks);
         }
         if (isset($state['participants'][$input['from']])) {
-            return new Result(Reasons::allow(), $state, []);
+            // The same person again (a second tab) changes nothing; a different
+            // identity on this ref is refused, never merged into one participant.
+            return SessionState::sameIdentity($state['participants'][$input['from']], $input['actingFor'] ?? null)
+                ? new Result(Reasons::allow(), $state, [])
+                : self::refused($state, Reasons::refuse(Reasons::REF_IN_USE, 409));
         }
         $config = $host->config;
         if ($config['consent'] === 'accept' && ! $state['consented'] && $input['from'] !== self::subjectOf($state, $config)) {

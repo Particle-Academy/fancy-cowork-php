@@ -36,6 +36,17 @@ return [
         'table' => false,
     ],
 
+    // Live presence and expiry. A closed browser never says goodbye: a
+    // participant not seen (a heartbeat, default every 30 s from the client, or
+    // any request of theirs) for idle_ms is removed; when the starter is gone the
+    // session ends (end_when_starter_leaves); a session with nobody in it for
+    // empty_ms ends. Applied on every read and write, and by `cowork:prune`.
+    'presence' => [
+        'idle_ms' => 120_000,
+        'empty_ms' => 600_000,
+        'end_when_starter_leaves' => true,
+    ],
+
     'guest' => [
         // Optional signed guest tokens (FancyCowork\GuestTokens). The host may
         // ignore them entirely. Lifetime in seconds, and the request header the

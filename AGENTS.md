@@ -39,7 +39,19 @@ leg of fancy-cowork (CC-fancy-0037): generic co-working sessions. The Node twin 
 - Ranked `scope` (`Pipeline::control`): `view` (default) blocks only intents into the view a
   higher rank acted on; `session`, the mode for mirrored co-work, blocks a lower rank on
   every view after a higher rank's commit on any view. Anything but `session` is `view`.
-- `src/Console/DoctorCommand.php`: `cowork:doctor`.
+- `src/Console/DoctorCommand.php`: `cowork:doctor`. `src/Console/PruneCommand.php`:
+  `cowork:prune`, the presence sweep over every open session.
+- One ref, one identity: `SessionState::sameIdentity`; `Reasons::REF_IN_USE`
+  (`cowork.denied.ref-in-use` 409) in `Engine::evaluateJoin` (after the join ability,
+  before already-joined) and in `Pipeline::membership` (after the member checks). `ref` is
+  the person at the keyboard, `actingFor` the account; a second identity on a live ref is
+  refused, never merged.
+- `src/Presence.php`: live presence and expiry, pure. `touch` (the caller is alive),
+  `expire` (idle participants removed as `PeerLeft` reason `expired`), `endIfAbandoned`
+  (`SessionEnded` reason `starter-left` or `empty`). `CoworkManager::onSession` runs it
+  inside the row lock on every operation and commits the sweep even when the operation is
+  refused; `sync` and `prune` run it too. `lastSeen` is `cowork_participants.last_seen_ms`
+  (an additive migration; null counts from `joined_at`).
 - `conformance/cowork-v1.json`: the shared fixtures, byte-identical with fancy-cowork-js
   and agent-integrations, pinned by SHA-256 in `tests/Support/Fixtures.php`.
 - `tests/sabotage.php`: breaks one clause at a time; every mutation must be caught.

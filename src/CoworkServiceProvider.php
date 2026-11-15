@@ -8,6 +8,7 @@ use FancyCowork\Audit\AuditRecorder;
 use FancyCowork\Broadcasting\PusherBroadcaster;
 use FancyCowork\Broadcasting\PusherHttpClient;
 use FancyCowork\Console\DoctorCommand;
+use FancyCowork\Console\PruneCommand;
 use FancyCowork\Contracts\CoworkEvent;
 use FancyCowork\Store\SessionStore;
 use Illuminate\Broadcasting\BroadcastManager;
@@ -54,7 +55,7 @@ final class CoworkServiceProvider extends ServiceProvider
         }
 
         if ($this->app->runningInConsole()) {
-            $this->commands([DoctorCommand::class]);
+            $this->commands([DoctorCommand::class, PruneCommand::class]);
             $this->publishes([__DIR__.'/../config/fancy-cowork.php' => $this->app->configPath('fancy-cowork.php')], 'fancy-cowork-config');
             $this->publishes([__DIR__.'/../database/migrations' => $this->app->databasePath('migrations')], 'fancy-cowork-migrations');
         }

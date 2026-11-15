@@ -24,6 +24,9 @@ final readonly class CoworkResponse
     public function toResponse(): JsonResponse
     {
         $response = new JsonResponse($this->body === [] ? new \stdClass : $this->body, $this->status);
+        if ($this->status === 204) {
+            $response->setContent('');
+        }
         $response->headers->set('Cache-Control', 'no-store, private');
 
         return $response;

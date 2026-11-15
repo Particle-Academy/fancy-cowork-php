@@ -58,11 +58,39 @@ Cowork::identify(function (Request $request): ?Participant {
     return new Participant(
         ref: 'member:'.$account->getKey(),
         label: $account->name,
-        // When your own auth runs one person inside another's account, say so.
-        // The package records both refs on every event and interprets neither.
-        actingFor: session('acting_for_ref'),
     );
 });
+```
+
+### `ref` is the person at the keyboard; `actingFor` is the account
+
+**A participant is its `ref`.** Two browsers that identify with the same `ref` are the same
+participant (the same person in two tabs). So when your own auth runs one person inside
+another's account, the `ref` must still be the PERSON, and `actingFor` the ACCOUNT:
+
+```php
+// An admin viewing the app as user 1. Your session knows who really signed in.
+Cowork::identify(function (Request $request): ?Participant {
+    $account = $request->user();                         // user 1, while your auth runs the admin inside it
+    if (! $account) {
+        return null;
+    }
+    $realPerson = session('signed_in_as_admin_id');      // whatever YOUR auth records
+
+    return $realPerson !== null
+        ? new Participant(ref: 'admin:'.$realPerson, label: 'Support', actingFor: 'user:'.$account->getKey())
+        : new Participant(ref: 'user:'.$account->getKey(), label: $account->name);
+});
+```
+
+Returning the account (`user:1`) as `ref` for the admin made both browsers ONE participant
+before 0.4: one person shown, every edit from the other browser skipped as the receiver's
+own, and nobody ranked above anybody. **It is now refused:** a `join`, intent or heartbeat
+that presents a live participant's `ref` with a different `actingFor` (none counts as a
+value) answers `409 cowork.denied.ref-in-use`, and nothing is merged. The package records
+`actingFor` on every event and never interprets it.
+
+```php
 
 Cowork::members(fn (Session $session, Participant $p): bool => /* may $p be in $session? */ true);
 
@@ -130,6 +158,7 @@ Under `fancy-cowork.prefix` (`cowork`), behind `fancy-cowork.middleware` (`['web
 | `POST sessions/{id}/join` / `leave` / `consent` / `end` | |
 | `POST sessions/{id}/follow` | `{target: ref\|null}` (ability `follow`) |
 | `POST sessions/{id}/intents` | `{intent, view?, revision?, to?, id?}`: the pipeline, then a broadcast to everyone else; 202 |
+| `POST sessions/{id}/heartbeat` | a live participant (same `ref`, same `actingFor`) is still here; 204. The client sends one every 30 s |
 | `POST auth` | channel auth: `{socket_id, channel_name}`, signed for the default broadcaster |
 
 Refusals are `{reason, blockedUntil?}` with 401 / 403 / 404 / 409 / 410 / 413 / 422 / 429 /
@@ -217,6 +246,38 @@ fresh handler per publish took p50 1402 to 1463 ms; the reused handler p50 2.0 t
 Octane, a request that broadcasts more than once). Under plain PHP-FPM each request
 starts fresh, and PHP 8.4 has no persistent cURL share handle to carry a connection
 across requests.
+
+## Live presence and abandoned sessions
+
+A closed browser never says goodbye, so the server does not wait for one:
+
+- every request from a live participant (same `ref`, same `actingFor`), and every
+  `POST sessions/{id}/heartbeat`, refreshes that participant's `lastSeen`;
+- a participant not seen for `presence.idle_ms` is removed, as if it had left (`PeerLeft`
+  with `reason: expired`; any baton it held goes back);
+- when the starter is gone the session ends (`SessionEnded`, `reason: starter-left`),
+  unless `presence.end_when_starter_leaves` is false;
+- a session with nobody in it for `presence.empty_ms` ends (`reason: empty`).
+
+This runs on every read and write of a session, inside its row lock, so it needs no
+scheduler. For sessions nobody touches, schedule the backstop:
+
+```php
+$schedule->command('cowork:prune')->everyMinute();
+```
+
+```php
+// config/fancy-cowork.php -- secure defaults, every one yours to change
+'presence' => [
+    'idle_ms' => 120_000,                // 2 min without a heartbeat or a request
+    'empty_ms' => 600_000,               // 10 min with nobody in the session
+    'end_when_starter_leaves' => true,
+],
+```
+
+`GET sessions/{id}` gives each participant `lastSeen` and `online`. The sweep runs before
+the answer, so every participant listed is online by construction; `lastSeen` is the
+information.
 
 ## Audit
 

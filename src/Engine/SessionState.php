@@ -77,6 +77,19 @@ final class SessionState
     }
 
     /**
+     * Whether `$actingFor` is the identity a participant joined with. A ref is the
+     * person at the keyboard and `actingFor` the account they act in; the same ref
+     * with a different `actingFor` (null counts as a value) is a different person,
+     * never a second tab of this one.
+     *
+     * @param  array<string, mixed>  $participant
+     */
+    public static function sameIdentity(array $participant, mixed $actingFor): bool
+    {
+        return ($participant['actingFor'] ?? null) === ($actingFor ?? null);
+    }
+
+    /**
      * @param  array<string, mixed>  $state
      * @return list<string>
      */

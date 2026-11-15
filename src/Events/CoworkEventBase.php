@@ -38,9 +38,9 @@ abstract class CoworkEventBase implements CoworkEvent
             'SessionRequested' => new SessionRequested($session, $ref, $actingFor, $at),
             'SessionActivated' => new SessionActivated($session, $ref, $actingFor, $at),
             'PeerJoined' => new PeerJoined($session, $ref, $actingFor, $at),
-            'PeerLeft' => new PeerLeft($session, $ref, $actingFor, $at),
+            'PeerLeft' => new PeerLeft($session, $ref, $actingFor, $at, isset($event['reason']) ? (string) $event['reason'] : null),
             'ConsentGiven' => new ConsentGiven($session, $ref, $actingFor, $at),
-            'SessionEnded' => new SessionEnded($session, $ref, $actingFor, $at),
+            'SessionEnded' => new SessionEnded($session, $ref, $actingFor, $at, isset($event['reason']) ? (string) $event['reason'] : null),
             'ControlChanged' => new ControlChanged($session, $ref, $actingFor, $at, (string) $event['view'], (string) $event['holder'], (string) $event['op']),
             'IntentRelayed' => new IntentRelayed($session, $ref, $actingFor, $at, (string) $event['kind'], $event['id'] ?? null, $event['view'] ?? null, $event['to'] ?? null),
         };

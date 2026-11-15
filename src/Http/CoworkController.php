@@ -47,6 +47,11 @@ final class CoworkController
         return $this->cowork->leave($request, $session)->toResponse();
     }
 
+    public function heartbeat(Request $request, string $session): JsonResponse
+    {
+        return $this->cowork->heartbeat($request, $session)->toResponse();
+    }
+
     public function end(Request $request, string $session): JsonResponse
     {
         return $this->cowork->end($request, $session)->toResponse();

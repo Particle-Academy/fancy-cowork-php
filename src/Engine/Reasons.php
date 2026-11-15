@@ -65,6 +65,9 @@ final class Reasons
 
     public const string CHANNEL = 'cowork.denied.channel';
 
+    /** A second identity (a different `actingFor`) on a live participant's ref. */
+    public const string REF_IN_USE = 'cowork.denied.ref-in-use';
+
     /** @return array{allow: false, reason: string, status: int, blockedUntil?: int} */
     public static function refuse(string $reason, int $status, ?int $blockedUntil = null): array
     {

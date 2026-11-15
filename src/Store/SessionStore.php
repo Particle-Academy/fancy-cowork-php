@@ -70,6 +70,7 @@ final class SessionStore
             $participant['revision'] = (int) $p->view_revision;
             $participant['follows'] = $p->follows === null ? null : (string) $p->follows;
             $participant['joinedAt'] = (int) $p->joined_at;
+            $participant['lastSeen'] = $p->last_seen_ms === null ? (int) $p->joined_at : (int) $p->last_seen_ms;
             $participants[(string) $p->ref] = $participant;
         }
 
@@ -130,6 +131,7 @@ final class SessionStore
                 'view_route' => $p['route'],
                 'view_revision' => $p['revision'],
                 'follows' => $p['follows'],
+                'last_seen_ms' => $p['lastSeen'] ?? $p['joinedAt'],
             ];
             $existing = $active->get((string) $p['ref']);
             if ($existing !== null) {
@@ -146,6 +148,24 @@ final class SessionStore
     }
 
     /** Sessions this ref started since `$since` (ms), for the starts-per-minute limit. */
+    /**
+     * Every session that has not ended, for `cowork:prune`.
+     *
+     * @return list<string>
+     */
+    public function openSessionIds(): array
+    {
+        return $this->db()->table('cowork_sessions')->where('state', '!=', 'ended')->orderBy('id')->pluck('id')->map(fn (mixed $id): string => (string) $id)->all();
+    }
+
+    /** When the session's last participant left; null when nobody has. */
+    public function lastLeftAt(string $id): ?int
+    {
+        $at = $this->db()->table('cowork_participants')->where('session_id', $id)->max('left_at');
+
+        return $at === null ? null : (int) $at;
+    }
+
     public function countStarts(string $ref, int $since): int
     {
         return $this->db()->table('cowork_sessions')->where('starter', $ref)->where('created_ms', '>', $since)->count();

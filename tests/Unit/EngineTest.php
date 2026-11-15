@@ -75,7 +75,9 @@ it('fails closed on a when naming a predicate the host never defined', function 
 });
 
 it('names the sender, not the view owner, on IntentRelayed', function (): void {
-    $result = Engine::evaluateIntent(engineHost(), twoPeers(), [
+    // b joined acting for u-9, so its intents carry that same identity.
+    $state = SessionState::create('s1', 'live', 'a', [['ref' => 'a', 'route' => '/'], ['ref' => 'b', 'route' => '/', 'actingFor' => 'u-9']]);
+    $result = Engine::evaluateIntent(engineHost(), $state, [
         'from' => 'b', 'actingFor' => 'u-9', 'envelope' => ['view' => 'a', 'revision' => 0, 'id' => 'i1'],
         'intent' => ['kind' => 'field', 'handle' => 'h', 'value' => 'secret'], 'now' => 5,
     ]);

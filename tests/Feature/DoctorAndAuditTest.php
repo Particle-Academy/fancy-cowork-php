@@ -51,7 +51,10 @@ it('writes no audit row unless the audit table is turned on', function (): void 
 it('records every event in cowork_audit when the flag is on, never a value', function (): void {
     coworkApp(['fancy-cowork.audit.table' => true]);
     bindHost();
-    $id = liveSession();
+    // `a` acts for the account u-1 throughout: it starts the session with that identity.
+    $started = http('POST', '/cowork/sessions', ['mode' => 'start', 'route' => '/'], 'a', ['X-Acting-For' => 'u-1']);
+    $id = $started['body']['session']['id'];
+    expect(http('POST', "/cowork/sessions/{$id}/join", ['route' => '/'], 'b')['status'])->toBe(200);
     http('POST', "/cowork/sessions/{$id}/intents", ['intent' => ['kind' => 'field', 'handle' => 'h', 'value' => 'secret-value'], 'view' => 'a', 'revision' => 0], 'a', ['X-Acting-For' => 'u-1']);
 
     $rows = app('db')->table('cowork_audit')->orderBy('id')->get();

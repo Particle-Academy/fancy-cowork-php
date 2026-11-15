@@ -10,6 +10,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **Live presence and abandoned sessions.** `POST {prefix}/sessions/{id}/heartbeat`
+  (a live participant; 204), and every request a participant makes, refresh its
+  `lastSeen`. A participant not seen for `presence.idle_ms` (default 120000) is removed
+  (`PeerLeft`, `reason: expired`); when the starter is gone the session ends
+  (`SessionEnded`, `reason: starter-left`) unless `presence.end_when_starter_leaves` is
+  false; a session empty for `presence.empty_ms` (default 600000) ends (`reason: empty`).
+  The sweep runs on every read and write of a session, so nothing needs scheduling, and
+  `cowork:prune` is the backstop for sessions nobody touches. `GET sessions/{id}` gives
+  each participant `lastSeen` and `online`. **Run the new migration**
+  (`2026_11_15_000000_add_last_seen_to_cowork_participants`, one nullable column).
+  Before this, a closed browser left its participant, and the session, live forever.
+
+### Changed
+
+- **One ref, one identity.** A `join`, intent or heartbeat that presents a live
+  participant's `ref` with a DIFFERENT `actingFor` is refused `409
+  cowork.denied.ref-in-use`. Before this the two were silently merged into one
+  participant: one person shown, the other browser's edits skipped as the receiver's own,
+  and nobody ranked above anybody. **Nothing to do unless your `identify` returned the same
+  `ref` for two different people**, typically an admin viewing as a user returning the
+  user's ref: return the ADMIN's ref there, with the user's as `actingFor` (README, "ref is
+  the person at the keyboard"). The same person in a second tab (the same `actingFor`) is
+  still allowed.
+
 ## [0.3.0] - 2026-11-15
 
 ### Added

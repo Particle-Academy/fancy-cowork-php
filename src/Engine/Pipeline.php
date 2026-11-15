@@ -124,6 +124,9 @@ final class Pipeline
                 return Reasons::refuse(Reasons::MEMBERSHIP, 403);
             }
         }
+        if (! SessionState::sameIdentity($ctx->session['participants'][$ctx->from], $ctx->actingFor)) {
+            return Reasons::refuse(Reasons::REF_IN_USE, 409);
+        }
 
         return $next();
     }

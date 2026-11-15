@@ -46,10 +46,12 @@ foreach ($cases as $case) {
 
                 continue;
             }
-            $op = ['from' => $from, 'now' => $now];
+            $acting = isset($step['actingFor']) ? ['actingFor' => $step['actingFor']] : [];
+            $op = ['from' => $from, 'now' => $now, ...$acting];
             $result = match ($step['op']) {
                 'intent' => Engine::evaluateIntent($host, $state, [
                     'from' => $from,
+                    ...$acting,
                     'envelope' => $step['envelope'] ?? [],
                     'intent' => Fixtures::expand($step['intent']),
                     'now' => $now,

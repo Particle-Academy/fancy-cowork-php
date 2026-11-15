@@ -12,6 +12,7 @@ Route::post('sessions/{session}/join', [CoworkController::class, 'join'])->name(
 Route::post('sessions/{session}/consent', [CoworkController::class, 'consent'])->name('fancy-cowork.consent');
 Route::post('sessions/{session}/leave', [CoworkController::class, 'leave'])->name('fancy-cowork.leave');
 Route::post('sessions/{session}/end', [CoworkController::class, 'end'])->name('fancy-cowork.end');
+Route::post('sessions/{session}/heartbeat', [CoworkController::class, 'heartbeat'])->name('fancy-cowork.heartbeat');
 Route::post('sessions/{session}/follow', [CoworkController::class, 'follow'])->name('fancy-cowork.follow');
 Route::post('sessions/{session}/intents', [CoworkController::class, 'intent'])->name('fancy-cowork.intent');
 Route::post('auth', [CoworkController::class, 'auth'])->name('fancy-cowork.auth');

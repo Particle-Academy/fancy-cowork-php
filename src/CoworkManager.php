@@ -251,8 +251,26 @@ final class CoworkManager
             if (($this->members)($session, $who) !== true) {
                 return CoworkResponse::refuse(403, Reasons::MEMBERSHIP);
             }
+            $config = $this->resolveConfig($session);
+            [$state, $events] = $this->store->locked($id, function () use ($id, $who, $config): array {
+                $original = $this->store->read($id);
+                if ($original === null) {
+                    return [null, []];
+                }
+                $now = $this->now();
+                $swept = $this->presence()->expire(Presence::touch($original, $who->ref, $who->actingFor, $now), $now, $this->store->lastLeftAt($id));
+                if ($swept['state'] !== $original) {
+                    $this->store->write($swept['state'], self::snapshot($config), $now);
+                }
 
-            return new CoworkResponse(200, ['session' => self::publicSession($state, $this->resolveConfig($session))]);
+                return [$swept['state'], $swept['events']];
+            });
+            $this->emit($events);
+            if ($state === null) {
+                return CoworkResponse::refuse(404, Reasons::UNKNOWN_SESSION);
+            }
+
+            return new CoworkResponse(200, ['session' => self::publicSession($state, $config, $this->presence(), $this->now())]);
         });
     }
 
@@ -282,6 +300,55 @@ final class CoworkManager
     public function leave(Request $request, string $id): CoworkResponse
     {
         return $this->onSession($request, $id, fn (EngineHost $host, array $state, Participant $who): Result => Engine::evaluateLeave($host, $state, $this->opInput($who)), null, needsConfig: false);
+    }
+
+    /**
+     * Live presence: a participant (same ref, same `actingFor`) says it is still
+     * here. 204. Anyone idle for `presence.idle_ms` is removed on the way, by the
+     * same sweep every request runs.
+     */
+    public function heartbeat(Request $request, string $id): CoworkResponse
+    {
+        return $this->onSession($request, $id, static function (EngineHost $host, array $state, Participant $who): Result {
+            if ($state['state'] === 'ended') {
+                return new Result(Reasons::refuse(Reasons::ENDED, 410), $state, []);
+            }
+            $participant = $state['participants'][$who->ref] ?? null;
+            if ($participant === null || ($host->members !== null && ($host->members)($who->ref) !== true)) {
+                return new Result(Reasons::refuse(Reasons::MEMBERSHIP, 403), $state, []);
+            }
+            if (! SessionState::sameIdentity($participant, $who->actingFor)) {
+                return new Result(Reasons::refuse(Reasons::REF_IN_USE, 409), $state, []);
+            }
+
+            return new Result(Reasons::allow(), $state, []);
+        }, static fn (): CoworkResponse => new CoworkResponse(204, []), needsConfig: false);
+    }
+
+    /**
+     * Expire one session's idle participants and end it if abandoned, with no
+     * request in hand: what `cowork:prune` runs for every open session.
+     *
+     * @return array{expired: int, ended: bool}
+     */
+    public function prune(string $id): array
+    {
+        [$counts, $events] = $this->store->locked($id, function () use ($id): array {
+            $state = $this->store->read($id);
+            if ($state === null) {
+                return [['expired' => 0, 'ended' => false], []];
+            }
+            $now = $this->now();
+            $swept = $this->presence()->expire($state, $now, $this->store->lastLeftAt($id));
+            if ($swept['state'] !== $state) {
+                $this->store->write($swept['state'], self::snapshot($this->configOrDefault($state)), $now);
+            }
+
+            return [['expired' => $swept['expired'], 'ended' => $swept['ended']], $swept['events']];
+        });
+        $this->emit($events);
+
+        return $counts;
     }
 
     public function end(Request $request, string $id): CoworkResponse
@@ -453,27 +520,44 @@ final class CoworkManager
             if (preg_match(self::SESSION_ID, $id) !== 1) {
                 return CoworkResponse::refuse(404, Reasons::UNKNOWN_SESSION);
             }
-            [$response, $events, $broadcast] = $this->store->locked($id, function () use ($id, $run, $after, $who): array {
-                $state = $this->store->read($id);
-                if ($state === null) {
+            [$response, $events, $broadcast] = $this->store->locked($id, function () use ($id, $run, $who): array {
+                $original = $this->store->read($id);
+                if ($original === null) {
                     return [CoworkResponse::refuse(404, Reasons::UNKNOWN_SESSION), [], null];
                 }
+                // Presence first: the caller is alive (it is calling), then anyone
+                // idle for presence.idle_ms is gone, and an abandoned session ends.
+                $now = $this->now();
+                $presence = $this->presence();
+                $swept = $presence->expire(Presence::touch($original, $who->ref, $who->actingFor, $now), $now, $this->store->lastLeftAt($id));
+                $state = $swept['state'];
+                $events = $swept['events'];
                 $host = $this->hostFor($state, $who);
+                $config = $host->config ?? Config::resolve();
                 $result = $run($host, $state, $who);
                 if (! $result->allowed()) {
+                    // The sweep is committed even when the operation is refused.
+                    if ($state !== $original) {
+                        $this->store->write($state, self::snapshot($config), $now);
+                    }
                     $decision = $result->decision;
                     $extra = isset($decision['blockedUntil']) ? ['blockedUntil' => $decision['blockedUntil']] : [];
 
-                    return [CoworkResponse::refuse($decision['status'], $decision['reason'], $extra), [], null];
+                    return [CoworkResponse::refuse($decision['status'], $decision['reason'], $extra), $events, null];
                 }
-                $config = $host->config ?? Config::resolve();
-                if ($result->state !== $state) {
-                    $this->store->write($result->state, self::snapshot($config), $this->now());
+                $next = Presence::touch($result->state, $who->ref, $who->actingFor, $now);
+                $left = count($next['participants']) < count($state['participants']);
+                $closed = $presence->endIfAbandoned($next, $now, $left ? $now : $this->store->lastLeftAt($id));
+                $next = $closed['state'];
+                if ($next !== $original) {
+                    $this->store->write($next, self::snapshot($config), $now);
                 }
 
-                return [null, $result->events, [$result, $config]];
+                return [null, [...$events, ...$result->events, ...$closed['events']], [new Result($result->decision, $next, $result->events), $config]];
             });
             if ($response instanceof CoworkResponse) {
+                $this->emit($events);
+
                 return $response;
             }
             // Committed: emit and broadcast only after the transaction is in.
@@ -482,7 +566,7 @@ final class CoworkManager
             if ($after !== null) {
                 return $after($result, $config);
             }
-            $public = self::publicSession($result->state, $config);
+            $public = self::publicSession($result->state, $config, $this->presence(), $this->now());
             $this->broadcast("presence-cowork.session.{$id}", 'cowork.session', $public);
 
             return new CoworkResponse(200, ['session' => $public]);
@@ -594,6 +678,32 @@ final class CoworkManager
         }
     }
 
+    private function presence(): Presence
+    {
+        $settings = $this->settings->get('fancy-cowork.presence', []);
+
+        return Presence::fromConfig(is_array($settings) ? $settings : []);
+    }
+
+    /**
+     * The session's config for a write that has no request: the host's when it is
+     * bound and answers, the shipped defaults otherwise.
+     *
+     * @param  array<string, mixed>  $state
+     * @return array<string, mixed>
+     */
+    private function configOrDefault(array $state): array
+    {
+        if ($this->config === null) {
+            return Config::resolve();
+        }
+        try {
+            return $this->resolveConfig(Session::fromState($state));
+        } catch (Throwable) {
+            return Config::resolve();
+        }
+    }
+
     private function now(): int
     {
         return $this->clock !== null ? (int) ($this->clock)() : (int) floor(microtime(true) * 1000);
@@ -606,10 +716,11 @@ final class CoworkManager
      * @param  array<string, mixed>  $config
      * @return array<string, mixed>
      */
-    public static function publicSession(array $state, array $config): array
+    public static function publicSession(array $state, array $config, ?Presence $presence = null, ?int $now = null): array
     {
         $participants = [];
         foreach ($state['participants'] as $p) {
+            $live = $presence !== null && $now !== null ? ['online' => $presence->online($p, $now), 'lastSeen' => Presence::lastSeen($p)] : [];
             $row = ['ref' => (string) $p['ref']];
             if (isset($p['label'])) {
                 $row['label'] = $p['label'];
@@ -617,7 +728,7 @@ final class CoworkManager
             if (isset($p['actingFor'])) {
                 $row['actingFor'] = $p['actingFor'];
             }
-            $participants[] = [...$row, 'route' => $p['route'], 'revision' => $p['revision'], 'follows' => $p['follows']];
+            $participants[] = [...$row, 'route' => $p['route'], 'revision' => $p['revision'], 'follows' => $p['follows'], ...$live];
         }
         $views = [];
         if (($config['control']['mode'] ?? null) === 'baton') {

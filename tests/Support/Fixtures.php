@@ -17,7 +17,7 @@ use FancyCowork\Engine\SessionState;
  */
 final class Fixtures
 {
-    public const string SHA256 = 'bcf40fb69bf9d1ce03bdc2dd426bc42f1dd890dc7a6716314f3bdccb6b7c7106';
+    public const string SHA256 = 'ba7176adea2252ca914c65dcd0dd26707f437fb70a5e087b30e8ad8dd8e4f973';
 
     public static function path(): string
     {
@@ -129,7 +129,7 @@ final class Fixtures
             id: 's1',
             state: $case['session']['state'],
             starter: $case['session']['starter'],
-            participants: array_map(static fn (array $p): array => ['ref' => $p['ref'], 'route' => $p['route']], $case['session']['participants']),
+            participants: array_map(static fn (array $p): array => ['ref' => $p['ref'], 'route' => $p['route'], ...(isset($p['actingFor']) ? ['actingFor' => $p['actingFor']] : [])], $case['session']['participants']),
             now: 0,
         );
     }
