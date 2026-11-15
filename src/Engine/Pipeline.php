@@ -281,6 +281,33 @@ final class Pipeline
         return (is_int($value) || is_float($value)) && is_finite((float) $value) ? (float) $value : 0;
     }
 
+    /**
+     * Ranked control as a server publishes it on the re-sync: every participant's
+     * effective rank, the scope and the idle window; null unless the mode is ranked.
+     * A browser uses it instead of knowing other people's roles (fixture `expectRanked`).
+     *
+     * @param  array<string, mixed>  $state
+     * @param  array<string, mixed>  $config
+     * @return array{ranks: array<string, int|float>, scope: string, idleMs: int}|null
+     */
+    public static function rankedSummary(array $state, array $config): ?array
+    {
+        if (($config['control']['mode'] ?? null) !== 'ranked') {
+            return null;
+        }
+        $ranks = [];
+        foreach (SessionState::refs($state) as $ref) {
+            $rank = self::rankOf($config, $ref);
+            $ranks[$ref] = floor($rank) === $rank && abs($rank) < PHP_INT_MAX ? (int) $rank : $rank;
+        }
+
+        return [
+            'ranks' => $ranks,
+            'scope' => ($config['control']['scope'] ?? null) === 'session' ? 'session' : 'view',
+            'idleMs' => (int) ($config['control']['idleMs'] ?? 3000),
+        ];
+    }
+
     private static function control(PipelineContext $ctx, array $intent, Closure $next): array
     {
         $mode = $ctx->config['control']['mode'] ?? 'baton';

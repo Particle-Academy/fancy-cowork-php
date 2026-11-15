@@ -37,6 +37,18 @@ foreach ($cases as $case) {
 
                 continue;
             }
+            if ($step['op'] === 'expectRanked') {
+                $summary = Pipeline::rankedSummary($state, $host->config);
+                $expected = $step['ranks'];
+                if ($summary !== null) {
+                    ksort($summary['ranks']);
+                }
+                ksort($expected);
+                expect(['step' => $i, 'summary' => $summary])
+                    ->toBe(['step' => $i, 'summary' => ['ranks' => $expected, 'scope' => $step['scope'], 'idleMs' => $step['idleMs']]]);
+
+                continue;
+            }
             if ($step['op'] === 'expectHolder') {
                 $control = SessionState::holderOf($state, $step['view']);
                 expect(['step' => $i, 'holder' => $control['holder']])->toBe(['step' => $i, 'holder' => $step['holder']]);

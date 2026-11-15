@@ -718,9 +718,14 @@ final class CoworkManager
      */
     public static function publicSession(array $state, array $config, ?Presence $presence = null, ?int $now = null): array
     {
+        // Ranked control: what a browser needs to hold its person without knowing anyone's role.
+        $ranked = Pipeline::rankedSummary($state, $config);
         $participants = [];
         foreach ($state['participants'] as $p) {
             $live = $presence !== null && $now !== null ? ['online' => $presence->online($p, $now), 'lastSeen' => Presence::lastSeen($p)] : [];
+            if ($ranked !== null) {
+                $live['rank'] = $ranked['ranks'][(string) $p['ref']] ?? 0;
+            }
             $row = ['ref' => (string) $p['ref']];
             if (isset($p['label'])) {
                 $row['label'] = $p['label'];
@@ -747,7 +752,11 @@ final class CoworkManager
             'consent' => $config['consent'],
             'consented' => $state['consented'],
             'routing' => $config['routing'],
-            'control' => ['mode' => $config['control']['mode'] ?? 'baton', 'views' => $views === [] ? new \stdClass : $views],
+            'control' => [
+                'mode' => $config['control']['mode'] ?? 'baton',
+                ...($ranked !== null ? ['scope' => $ranked['scope'], 'idleMs' => $ranked['idleMs']] : []),
+                'views' => $views === [] ? new \stdClass : $views,
+            ],
             'participants' => $participants,
         ];
     }

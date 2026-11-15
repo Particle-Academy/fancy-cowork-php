@@ -10,6 +10,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **The re-sync publishes ranked control.** Under `control.mode: 'ranked'`,
+  `GET /cowork/sessions/{id}` now carries each participant's effective `rank` (0 for a ref
+  the config does not rank) and `control.scope` (`view` or `session`) and
+  `control.idleMs`. The server is the authority, so a browser no longer needs to know
+  other people's roles to hold its person; agent-integrations 0.65.0 uses them, falling
+  back to the page's own rank function only where the server sent nothing.
+  `Pipeline::rankedSummary($state, $config)` returns the same thing. Nothing changes for
+  any other mode. Shared fixtures re-pinned (`d036861f`, two `expectRanked` cases).
+  **Nothing to do**: the fields are additive and an older client ignores them.
+
 ## [0.4.0] - 2026-11-15
 
 ### Added
