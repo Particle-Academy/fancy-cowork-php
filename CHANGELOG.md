@@ -10,6 +10,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **Ranked control can span the session**: `control: { mode: 'ranked', scope: 'session' }`.
+  A higher rank's committed intent on ANY view then blocks every lower rank's view
+  intents on every view, until `idleMs` after the latest such intent (`blockedUntil`).
+  It is the mode for mirrored co-work (mutual follow plus shared fields), where each
+  person writes only their own view, so per-view ranking would never block anyone.
+  Presence intents stay exempt. **Nothing to do:** the default scope is `view`, exactly
+  the previous behaviour. Shared fixtures re-pinned at `bcf40fb6...7106`.
+
 ## [0.2.0] - 2026-11-14
 
 **The first version on Packagist.** `v0.1.0` was tagged but never submitted to Packagist,

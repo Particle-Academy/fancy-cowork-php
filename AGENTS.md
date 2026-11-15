@@ -36,6 +36,9 @@ leg of fancy-cowork (CC-fancy-0037): generic co-working sessions. The Node twin 
   presence for socket servers that do not stamp senders (Sockudo). Validated in
   `Wire::validIntent`; a cursor spends only `rate.cursorsPerSecond` (`Pipeline::rateLimit`,
   committed in `Engine::evaluateIntent`), never the intent budget.
+- Ranked `scope` (`Pipeline::control`): `view` (default) blocks only intents into the view a
+  higher rank acted on; `session`, the mode for mirrored co-work, blocks a lower rank on
+  every view after a higher rank's commit on any view. Anything but `session` is `view`.
 - `src/Console/DoctorCommand.php`: `cowork:doctor`.
 - `conformance/cowork-v1.json`: the shared fixtures, byte-identical with fancy-cowork-js
   and agent-integrations, pinned by SHA-256 in `tests/Support/Fixtures.php`.

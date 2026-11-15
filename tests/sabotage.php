@@ -81,6 +81,9 @@ $mutations = [
     ['presence: default cursor rate changed', 'src/Engine/Config.php', "'cursorsPerSecond' => 10],", "'cursorsPerSecond' => 100],"],
     ['keep-alive: handler rebuilt per publish', 'src/Broadcasting/PusherHttpClient.php', '$this->handler ??= ', '$this->handler = '],
     ['keep-alive: handler never set', 'src/Broadcasting/PusherHttpClient.php', "                    ->setHandler(\$this->handler)\n", ''],
+    ['ranked: session scope ignored', 'src/Engine/Pipeline.php', "\$views = (\$ctx->config['control']['scope'] ?? 'view') === 'session'", "\$views = false"],
+    ['ranked: every scope is session', 'src/Engine/Pipeline.php', "\$views = (\$ctx->config['control']['scope'] ?? 'view') === 'session'", "\$views = true"],
+    ['ranked: session blocker not the latest', 'src/Engine/Pipeline.php', "\$blockedUntil = max(\$blockedUntil ?? 0, \$at + \$idleMs);\n                }", "\$blockedUntil = \$blockedUntil ?? \$at + \$idleMs;\n                }"],
     ['reserved refs accepted', 'src/Engine/Wire.php', "return self::isHandle(\$value) && ! in_array(\$value, self::RESERVED_REFS, true);", 'return self::isHandle($value);'],
     ['sender ref unchecked', 'src/Engine/Engine.php', "if (! Wire::isRef(\$from)) {\n            return Reasons::refuse(Reasons::UNIDENTIFIED, 401);", "if (false) {\n            return Reasons::refuse(Reasons::UNIDENTIFIED, 401);"],
 ];

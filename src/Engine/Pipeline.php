@@ -305,12 +305,19 @@ final class Pipeline
             $idleMs = (int) ($ctx->config['control']['idleMs'] ?? 3000);
             $mine = self::rankOf($ctx->config, $ctx->from);
             $blockedUntil = null;
-            foreach ($ctx->session['last'][$ctx->view] ?? [] as $ref => $at) {
-                $ref = (string) $ref;
-                if ($ref === $ctx->from || self::rankOf($ctx->config, $ref) <= $mine || $ctx->now - $at >= $idleMs) {
-                    continue;
+            // scope 'session' (mirrored co-work): a higher rank's commit on ANY view
+            // blocks; anything else is per view, the commits into this view only.
+            $views = ($ctx->config['control']['scope'] ?? 'view') === 'session'
+                ? ($ctx->session['last'] ?? [])
+                : [$ctx->view => $ctx->session['last'][$ctx->view] ?? []];
+            foreach ($views as $times) {
+                foreach ($times as $ref => $at) {
+                    $ref = (string) $ref;
+                    if ($ref === $ctx->from || self::rankOf($ctx->config, $ref) <= $mine || $ctx->now - $at >= $idleMs) {
+                        continue;
+                    }
+                    $blockedUntil = max($blockedUntil ?? 0, $at + $idleMs);
                 }
-                $blockedUntil = max($blockedUntil ?? 0, $at + $idleMs);
             }
             if ($blockedUntil !== null) {
                 return Reasons::refuse(Reasons::CONTROL, 409, $blockedUntil);

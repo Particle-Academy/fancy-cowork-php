@@ -92,7 +92,7 @@ Anything the config resolver omits takes the default; every limit is configurabl
 |---|---|---|
 | `consent` | `notify` | `none` admits at once; `notify` admits at once and sets the indicator flag; `accept` refuses every join but the subject's until the subject consents |
 | `subject` | the starter | whose consent `accept` waits for |
-| `control` | `['mode' => 'baton']` | `free` (last writer, revision-guarded), `ranked` (`rank` map or `fn (string $ref): int`, `idleMs` 3000), `baton` (request / grant / release / revoke) |
+| `control` | `['mode' => 'baton']` | `free` (last writer, revision-guarded), `ranked` (`rank` map or `fn (string $ref): int`, `idleMs` 3000, `scope` `view` (default) or `session`: the mode for mirrored co-work, where a higher rank's intent on ANY view blocks lower ranks everywhere), `baton` (request / grant / release / revoke) |
 | `routing` | `server` | see below |
 | `limits` | none | `allow` / `deny` rules `{kinds, handles, routes, when}` (deny wins), `mask`, `viewOnly` handle globs |
 | `rate` | 10 intents/s, 1 visit/s, 30 app/min, 5 starts/min | per sender |

@@ -17,7 +17,7 @@ use FancyCowork\Engine\SessionState;
  */
 final class Fixtures
 {
-    public const string SHA256 = 'e2bcca743f147be1d8b2cdd7267fad2ea7eab4f3b0b3a113501a7ce6b98ed6b5';
+    public const string SHA256 = 'bcf40fb69bf9d1ce03bdc2dd426bc42f1dd890dc7a6716314f3bdccb6b7c7106';
 
     public static function path(): string
     {
