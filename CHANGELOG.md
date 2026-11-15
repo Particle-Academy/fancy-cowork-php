@@ -10,6 +10,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-11-15
+
 ### Added
 
 - **The re-sync publishes ranked control.** Under `control.mode: 'ranked'`,
