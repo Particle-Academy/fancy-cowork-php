@@ -185,7 +185,7 @@ so it works for anonymous participants too, and it signs each presence member wi
 Laravel's own `/broadcasting/auth` also gets these channels registered
 (`fancy-cowork.channels`), but it is **not equivalent**: Laravel always sets a presence
 member's `user_id` to the authenticated ACCOUNT (`getAuthIdentifier()`). When two people
-share one account (an admin's "View As", impersonation), the presence server merges
+share one account (an admin viewing as someone, "View As"), the presence server merges
 their connections into one member, and `here` / `joining` / `leaving` describe the wrong
 person. Intents are unaffected (the server stamps their sender from `identify`), but
 presence and `online` are wrong, and agent-integrations 0.65.2+ warns on the console.

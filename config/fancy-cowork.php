@@ -25,6 +25,13 @@ return [
     // presence-cowork.session.{id}. Uses the default broadcaster.
     'broadcast' => true,
 
+    // Send those broadcasts AFTER the response (the kernel's terminate), so a
+    // synchronous broadcaster talking to a slow or rate-limited socket server
+    // never holds the caller's request or a PHP worker's answer. A long-running
+    // non-HTTP process (a queue worker) calls Cowork::flushBroadcasts() itself,
+    // or sets this to false to send in place.
+    'broadcast_after_response' => true,
+
     // Register cowork.session.{id} / cowork.participant.{ref} with Laravel's
     // own /broadcasting/auth too (for hosts whose participants are signed in).
     // POST {prefix}/auth works for everyone, signed-in or not.

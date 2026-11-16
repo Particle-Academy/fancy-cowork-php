@@ -87,6 +87,10 @@ function http(string $method, string $uri, ?array $body = null, ?string $who = n
     $request = Request::create($uri, $method, [], [], [], $server, $body === null ? '' : json_encode($body, JSON_THROW_ON_ERROR));
     app()->instance('request', $request);
     $response = app('router')->dispatch($request);
+    // The kernel's terminate: broadcasts go out after the response.
+    if (app()->bound(CoworkManager::class)) {
+        app(CoworkManager::class)->flushBroadcasts();
+    }
 
     return [
         'status' => $response->getStatusCode(),

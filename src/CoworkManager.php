@@ -553,7 +553,7 @@ final class CoworkManager
                     $this->store->write($next, self::snapshot($config), $now);
                 }
 
-                return [null, [...$events, ...$result->events, ...$closed['events']], [new Result($result->decision, $next, $result->events), $config]];
+                return [null, [...$events, ...$result->events, ...$closed['events']], [new Result($result->decision, $next, $result->events), $config, $next['revision'] !== $original['revision']]];
             });
             if ($response instanceof CoworkResponse) {
                 $this->emit($events);
@@ -562,12 +562,15 @@ final class CoworkManager
             }
             // Committed: emit and broadcast only after the transaction is in.
             $this->emit($events);
-            [$result, $config] = $broadcast;
+            [$result, $config, $changed] = $broadcast;
             if ($after !== null) {
                 return $after($result, $config);
             }
             $public = self::publicSession($result->state, $config, $this->presence(), $this->now());
-            $this->broadcast("presence-cowork.session.{$id}", 'cowork.session', $public);
+            // Nothing changed (the same person joining again, a presence touch): nothing to tell.
+            if ($changed) {
+                $this->broadcast("presence-cowork.session.{$id}", 'cowork.session', $public);
+            }
 
             return new CoworkResponse(200, ['session' => $public]);
         });
@@ -666,11 +669,47 @@ final class CoworkManager
     }
 
     /** @param  array<string, mixed>  $payload */
+    /** @var list<array{0: string, 1: string, 2: array<string, mixed>, 3: ?string}> */
+    private array $pendingBroadcasts = [];
+
+    private bool $flushRegistered = false;
+
+    /**
+     * Broadcast AFTER the response is sent (`fancy-cowork.broadcast_after_response`, default
+     * true): a synchronous broadcaster talking to a slow or rate-limited socket server then
+     * costs the broadcast, never the caller's request, and never holds the row lock (the
+     * transaction is long committed). Flushed on the kernel's terminate; a long-running
+     * process that is not a request (a queue worker) calls flushBroadcasts() itself.
+     */
     private function broadcast(string $channel, string $event, array $payload, ?string $exceptSocket = null): void
     {
         if (! $this->settings->get('fancy-cowork.broadcast', true) || ! $this->container->bound(BroadcastFactory::class)) {
             return;
         }
+        if (! $this->settings->get('fancy-cowork.broadcast_after_response', true) || ! method_exists($this->container, 'terminating')) {
+            $this->publish($channel, $event, $payload, $exceptSocket);
+
+            return;
+        }
+        $this->pendingBroadcasts[] = [$channel, $event, $payload, $exceptSocket];
+        if (! $this->flushRegistered) {
+            $this->flushRegistered = true;
+            $this->container->terminating(fn () => $this->flushBroadcasts());
+        }
+    }
+
+    /** Send every broadcast still waiting, in order, once each. */
+    public function flushBroadcasts(): void
+    {
+        while ($this->pendingBroadcasts !== []) {
+            [$channel, $event, $payload, $exceptSocket] = array_shift($this->pendingBroadcasts);
+            $this->publish($channel, $event, $payload, $exceptSocket);
+        }
+    }
+
+    /** @param  array<string, mixed>  $payload */
+    private function publish(string $channel, string $event, array $payload, ?string $exceptSocket): void
+    {
         try {
             $this->container->make(BroadcastFactory::class)->connection()->broadcast([$channel], $event, [...$payload, 'socket' => $exceptSocket]);
         } catch (Throwable) {

@@ -10,7 +10,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-## [0.4.2] - 2026-11-15
+## [0.4.2] - 2026-11-16
+
+### Changed
+
+- **Broadcasts go out after the response.** A consumer's `/follow` and `/join` POSTs hung
+  for over 10 and 20 seconds: their broadcaster is synchronous and their socket server
+  was answering 429, so each request waited on its broadcast while holding one of four
+  PHP workers, and the browser's co-work queue waited on the follow. The row lock was
+  never held across a broadcast (it runs after the transaction commits), but the
+  broadcast still ran inside the request. Now `fancy-cowork.broadcast_after_response`
+  (default true) queues them and sends them on the kernel's terminate.
+  **Nothing to do for HTTP traffic.** A long-running process that is not a request (a
+  queue worker calling the manager) calls `Cowork::flushBroadcasts()`, or sets the
+  option to false.
+- **A change that changes nothing broadcasts nothing.** A join by someone already joined
+  (the same person in a second tab) was already allowed without a state change; it no
+  longer broadcasts `cowork.session` either.
 
 ### Fixed
 
