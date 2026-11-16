@@ -177,9 +177,19 @@ Refusals are `{reason, blockedUntil?}` with 401 / 403 / 404 / 409 / 410 / 413 / 
 
 Channels: `presence-cowork.session.{id}` (identify + `members()` + a live participant; the
 member payload comes from the server) and `private-cowork.participant.{ref}` (only that
-ref). `POST {prefix}/auth` works for anonymous participants too, because it asks your
-`identify`, not a Laravel guard. Hosts on Laravel's own `/broadcasting/auth` get the same
-channels registered (`fancy-cowork.channels`).
+ref). **Authorize them with `POST {prefix}/auth`** (default `/cowork/auth`; point Echo's
+authorizer at it for `cowork.*` channels). It asks your `identify`, not a Laravel guard,
+so it works for anonymous participants too, and it signs each presence member with
+`user_id` = the participant's co-work **ref**: one member per person.
+
+Laravel's own `/broadcasting/auth` also gets these channels registered
+(`fancy-cowork.channels`), but it is **not equivalent**: Laravel always sets a presence
+member's `user_id` to the authenticated ACCOUNT (`getAuthIdentifier()`). When two people
+share one account (an admin's "View As", impersonation), the presence server merges
+their connections into one member, and `here` / `joining` / `leaving` describe the wrong
+person. Intents are unaffected (the server stamps their sender from `identify`), but
+presence and `online` are wrong, and agent-integrations 0.65.2+ warns on the console.
+Two tabs of the SAME person share one ref and one member, which is correct.
 
 ## Presence over the server (cursors and field activity)
 

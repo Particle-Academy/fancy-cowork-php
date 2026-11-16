@@ -10,6 +10,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **README: Laravel's `/broadcasting/auth` is not equivalent to `POST {prefix}/auth`** for
+  the presence channel. Laravel keys a presence member by the authenticated account, so
+  two people on one account ("View As") merged into one member and presence described
+  the wrong person. The README now says to authorize co-work channels with
+  `POST {prefix}/auth`, which keys each member by its co-work ref. Documentation only;
+  no code changed. **If your Echo authorizes `cowork.*` channels through
+  `/broadcasting/auth` and people can share an account, point it at `/cowork/auth`.**
+
 ## [0.4.1] - 2026-11-15
 
 ### Added
