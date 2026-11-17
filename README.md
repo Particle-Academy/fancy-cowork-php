@@ -15,6 +15,13 @@ the session indicator) is in
 
 **Pre-1.0.** Breaking changes land in minor releases; read the changelog before upgrading.
 
+<!-- fancy-agents-note:start -->
+> **For agents.** Every Fancy package, this one included, is listed on the
+> Fancy MCP catalog server at `https://ui.particle.academy/mcp` (streamable HTTP, no API key;
+> MCP id `fancy-ui`), with install commands and docs. How an agent installs
+> and uses this package is in [AGENTS.md](https://github.com/Particle-Academy/fancy-cowork-php/blob/main/AGENTS.md).
+<!-- fancy-agents-note:end -->
+
 ## What it is not
 
 - **Not chat.** There are no conversations, messages, contact lists or message storage.
