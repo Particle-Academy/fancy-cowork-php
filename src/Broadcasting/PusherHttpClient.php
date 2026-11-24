@@ -5,8 +5,10 @@ declare(strict_types=1);
 namespace FancyCowork\Broadcasting;
 
 use Closure;
+use GuzzleHttp\Exception\ConnectException;
 use GuzzleHttp\Utils;
 use Illuminate\Broadcasting\BroadcastException;
+use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\Factory as HttpFactory;
 use InvalidArgumentException;
 use Throwable;
@@ -25,11 +27,32 @@ final class PusherHttpClient
     /** The protocol's per-request channel limit. */
     public const int MAX_CHANNELS = 100;
 
-    /** A 429 is retried at most this many times per request... */
+    /**
+     * Default: a refusal the service can recover from (429, 5xx, a failed connection)
+     * is retried at most this many times per request... (`fancy-cowork.publish.retries`)
+     */
     public const int MAX_RETRIES = 2;
 
-    /** ...and never waits more than this in total (ms); a longer Retry-After is not waited out. */
+    /**
+     * ...and never waits more than this in total (ms); a longer Retry-After is not
+     * waited out. (`fancy-cowork.publish.retry_budget_ms`)
+     */
     public const int MAX_RETRY_WAIT_MS = 3000;
+
+    /**
+     * The first wait when the service names none (ms), doubled on each retry.
+     * (`fancy-cowork.publish.backoff_ms`)
+     */
+    public const int BACKOFF_MS = 250;
+
+    /** Answers worth another attempt: rate-limited, or the service briefly unwell. */
+    private const array RETRYABLE = [429, 500, 502, 503, 504];
+
+    private readonly int $retries;
+
+    private readonly int $retryBudgetMs;
+
+    private readonly int $backoffMs;
 
     /**
      * The ONE Guzzle handler every publish goes through, built on the first. A
@@ -59,18 +82,31 @@ final class PusherHttpClient
         private readonly ?Closure $handlerFactory = null,
         /** Sleeps for the given milliseconds before a retry; default usleep. Tests record instead. */
         private readonly ?Closure $sleep = null,
-    ) {}
+        ?int $retries = null,
+        ?int $retryBudgetMs = null,
+        ?int $backoffMs = null,
+    ) {
+        $this->retries = max(0, $retries ?? self::MAX_RETRIES);
+        $this->retryBudgetMs = max(0, $retryBudgetMs ?? self::MAX_RETRY_WAIT_MS);
+        $this->backoffMs = max(0, $backoffMs ?? self::BACKOFF_MS);
+    }
 
     /**
      * From a Laravel broadcasting connection shaped like Pusher's or Reverb's:
      * `key`, `secret`, `app_id`, and `options.host` / `port` / `scheme` / `useTLS`.
      *
+     * `$publish` is the app's `fancy-cowork.publish`: `retries`, `retry_budget_ms`,
+     * `backoff_ms`. A missing or non-numeric value keeps its default.
+     *
      * @param  Closure(): HttpFactory  $http
      * @param  array<string, mixed>  $config
      * @param  Closure(): callable|null  $handlerFactory
+     * @param  array<string, mixed>  $publish
+     * @param  Closure(int): void|null  $sleep
      */
-    public static function fromConfig(Closure $http, array $config, ?Closure $handlerFactory = null): self
+    public static function fromConfig(Closure $http, array $config, ?Closure $handlerFactory = null, array $publish = [], ?Closure $sleep = null): self
     {
+        $setting = static fn (string $name): ?int => isset($publish[$name]) && is_numeric($publish[$name]) ? (int) $publish[$name] : null;
         $options = is_array($config['options'] ?? null) ? $config['options'] : [];
         foreach (['key' => $config['key'] ?? null, 'secret' => $config['secret'] ?? null, 'app_id' => $config['app_id'] ?? null, 'options.host' => $options['host'] ?? null] as $name => $value) {
             if (! is_scalar($value) || (string) $value === '') {
@@ -92,6 +128,10 @@ final class PusherHttpClient
             isset($options['timeout']) && is_numeric($options['timeout']) ? (int) $options['timeout'] : 5,
             null,
             $handlerFactory,
+            $sleep,
+            $setting('retries'),
+            $setting('retry_budget_ms'),
+            $setting('backoff_ms'),
         );
     }
 
@@ -140,9 +180,12 @@ final class PusherHttpClient
     }
 
     /**
-     * One signed POST, retrying a 429 after its Retry-After (seconds or an HTTP
-     * date), at most MAX_RETRIES times and never waiting more than
-     * MAX_RETRY_WAIT_MS in total. Each attempt is signed afresh, so its
+     * One signed POST. A refusal the service can recover from (429, 500, 502, 503,
+     * 504, or a connection that failed) is retried after its Retry-After (seconds
+     * or an HTTP date) or, when it names none, after `backoff_ms` doubled per
+     * retry; at most `retries` times and never waiting more than `retry_budget_ms`
+     * in total. A wait that would pass the budget is not started: the publish fails
+     * at once rather than hold the worker. Each attempt is signed afresh, so its
      * auth_timestamp is current. Any other refusal is not retried.
      */
     private function publish(string $event, string $path, string $body): void
@@ -152,6 +195,8 @@ final class PusherHttpClient
             $now = $this->clock !== null ? ($this->clock)() : time();
             $query = PusherProtocol::eventQuery($this->key, $this->secret, $path, $body, $now);
 
+            $response = null;
+            $failure = null;
             try {
                 $this->handler ??= $this->handlerFactory !== null ? ($this->handlerFactory)() : Utils::chooseHandler();
                 $response = ($this->http)()
@@ -160,15 +205,19 @@ final class PusherHttpClient
                     ->acceptJson()
                     ->withBody($body, 'application/json')
                     ->post($this->baseUrl.$path.'?'.http_build_query($query));
+            } catch (ConnectionException|ConnectException $e) {
+                $failure = 'failed: '.$e::class;
             } catch (Throwable $e) {
                 throw new BroadcastException("fancy-pusher: publishing `{$event}` failed: ".$e::class.'.');
             }
-            if ($response->successful()) {
+            if ($response !== null && $response->successful()) {
                 return;
             }
-            if ($response->status() === 429 && $attempt < self::MAX_RETRIES) {
-                $wait = $this->retryAfterMs($response->header('Retry-After'), $now);
-                if ($waited + $wait <= self::MAX_RETRY_WAIT_MS) {
+            $retryable = $response === null || in_array($response->status(), self::RETRYABLE, true);
+            if ($retryable && $attempt < $this->retries) {
+                $header = $response === null ? '' : $response->header('Retry-After');
+                $wait = $this->retryAfterMs($header, $now) ?? $this->backoffMs * (2 ** $attempt);
+                if ($waited + $wait <= $this->retryBudgetMs) {
                     $this->sleep !== null ? ($this->sleep)($wait) : usleep($wait * 1000);
                     $waited += $wait;
 
@@ -176,12 +225,15 @@ final class PusherHttpClient
                 }
             }
 
-            throw new BroadcastException("fancy-pusher: publishing `{$event}` was refused with HTTP {$response->status()}.");
+            $tried = $attempt + 1;
+            throw new BroadcastException($response === null
+                ? "fancy-pusher: publishing `{$event}` {$failure} (after {$tried} attempt(s), {$waited} ms waiting)."
+                : "fancy-pusher: publishing `{$event}` was refused with HTTP {$response->status()} (after {$tried} attempt(s), {$waited} ms waiting).");
         }
     }
 
-    /** Retry-After as milliseconds: delta-seconds or an HTTP date; 1 s when absent or unreadable. */
-    private function retryAfterMs(string $header, int $now): int
+    /** Retry-After as milliseconds: delta-seconds or an HTTP date; null when absent or unreadable. */
+    private function retryAfterMs(string $header, int $now): ?int
     {
         $header = trim($header);
         if ($header !== '' && ctype_digit($header)) {
@@ -189,6 +241,6 @@ final class PusherHttpClient
         }
         $at = $header === '' ? false : strtotime($header);
 
-        return $at === false ? 1000 : max(0, $at - $now) * 1000;
+        return $at === false ? null : max(0, $at - $now) * 1000;
     }
 }

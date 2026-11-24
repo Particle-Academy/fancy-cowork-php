@@ -32,6 +32,20 @@ return [
     // or sets this to false to send in place.
     'broadcast_after_response' => true,
 
+    // How hard the `fancy-pusher` driver tries before a broadcast counts as
+    // undelivered. A 429, a 500/502/503/504 or a failed connection is retried
+    // after the service's Retry-After, or else after backoff_ms doubled per retry;
+    // at most `retries` times, never waiting more than retry_budget_ms in all (a
+    // longer Retry-After is not waited out). The wait happens after the response,
+    // but it holds that PHP worker, so keep the budget short. A broadcast still
+    // undelivered is logged as a warning and dispatched as
+    // FancyCowork\Broadcasting\BroadcastFailed; it is never dropped silently.
+    'publish' => [
+        'retries' => 2,
+        'retry_budget_ms' => 3000,
+        'backoff_ms' => 250,
+    ],
+
     // Register cowork.session.{id} / cowork.participant.{ref} with Laravel's
     // own /broadcasting/auth too (for hosts whose participants are signed in).
     // POST {prefix}/auth works for everyone, signed-in or not.

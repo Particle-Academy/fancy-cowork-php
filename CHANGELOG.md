@@ -10,6 +10,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **`fancy-cowork.publish`: how hard the `fancy-pusher` driver tries.** `retries`
+  (default `2`), `retry_budget_ms` (default `3000`, the most it waits in total) and
+  `backoff_ms` (default `250`, the first wait when the service names none, doubled per
+  retry). The defaults keep the old bounds. Nothing to do; raise them only if your
+  socket service rate-limits for longer, and remember the wait holds a PHP worker after
+  the response.
+- **`FancyCowork\Broadcasting\BroadcastFailed`**, dispatched for a broadcast that could
+  not be delivered: `channel`, `event`, `session`, `reason`, never the payload. Listen for
+  it to count, alert or re-queue. It is not one of the eight audit events.
+
+### Fixed
+
+- **An undelivered broadcast was dropped with no trace.** Broadcasts go out after the
+  response (0.4.2), and the manager caught every failure there and said nothing, so a
+  cursor or session change the socket service refused simply vanished while the caller
+  had its `202`. When lab test 87 lost one cursor move in 20, nothing on the server
+  could say whether the publish had failed. Now a failure is logged as a warning
+  and dispatched as `BroadcastFailed`. Nothing to do; add a listener if you want more
+  than the log line.
+- **Only a `429` was retried.** A `500`, `502`, `503`, `504` or a failed connection
+  (the service restarting, a dropped keep-alive) lost the event on the first attempt.
+  They are now retried within the same budget. When the service names no
+  `Retry-After`, the first wait is 250 ms (was 1 s), doubled per retry. Nothing to do.
+
 ### Changed
 
 - **Docs:** `AGENTS.md` is now the guide to using this package (install, how to find it on the Fancy MCP catalog server once it is listed, API essentials, traps). The contributor notes it held moved to `CONTRIBUTING.md`, and `CLAUDE.md` is now a symlink to it. The README points to the MCP server and to `AGENTS.md`. No code changed; nothing to do.

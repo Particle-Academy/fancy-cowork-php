@@ -252,8 +252,14 @@ A host already running Reverb keeps working either way: it is the same protocol.
 driver refuses a payload over the protocol's 10 KB limit before sending it, sends at
 most 100 channels per request, excludes the sender's socket, and raises
 `BroadcastException` on a non-2xx answer, never with the secret in it. A `429` (the
-events API rate-limiting, as Genie's WebSockets service does) is retried after its
-`Retry-After`, at most twice and never more than 3 s of waiting in total. The body is
+events API rate-limiting, as Genie's WebSockets service does), a `500`/`502`/`503`/`504`
+or a connection that fails is retried after its `Retry-After`, or else after 250 ms
+doubled per retry; by default at most twice and never more than 3 s of waiting in total
+(`fancy-cowork.publish.retries`, `retry_budget_ms`, `backoff_ms`). A broadcast still
+undelivered after that is never dropped silently: it is logged as a warning and
+dispatched as `FancyCowork\Broadcasting\BroadcastFailed` (channel, event, session,
+reason; never the payload). Committed session changes reach a client that missed them
+on its next `GET`; a missed cursor or activity is stale until that peer's next one. The body is
 ASCII-only JSON, because some servers read it as Latin-1. Laravel's HTTP client needs
 Guzzle, which every `laravel/framework` app already has.
 

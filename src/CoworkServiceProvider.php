@@ -74,7 +74,12 @@ final class CoworkServiceProvider extends ServiceProvider
     {
         $extend = function (BroadcastManager $manager): void {
             $manager->extend('fancy-pusher', fn ($app, array $config): PusherBroadcaster => new PusherBroadcaster(
-                PusherHttpClient::fromConfig(fn (): HttpFactory => $app->make(HttpFactory::class), $config),
+                PusherHttpClient::fromConfig(
+                    fn (): HttpFactory => $app->make(HttpFactory::class),
+                    $config,
+                    null,
+                    (array) $app['config']->get('fancy-cowork.publish', []),
+                ),
             ));
         };
         if ($this->app->resolved(BroadcastManager::class)) {

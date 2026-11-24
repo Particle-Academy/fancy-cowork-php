@@ -33,7 +33,11 @@ leg of fancy-cowork (CC-fancy-0037): generic co-working sessions. The Node twin 
   request signature), `PusherHttpClient` (`POST /apps/{id}/events` over Laravel's HTTP
   client: 10 KB limit, 100-channel chunks, sender socket excluded), `PusherBroadcaster`
   (Laravel's Pusher conventions). Registered in `CoworkServiceProvider` before the channel
-  callbacks resolve. The client keeps ONE Guzzle handler for its lifetime (keep-alive;
+  callbacks resolve. The client retries 429 / 5xx / failed connections within
+  `fancy-cowork.publish`; it still THROWS when it gives up (Laravel's queued
+  `BroadcastEvent` relies on that). `CoworkManager::publish` is the one place that
+  catches it, and it must report (`reportUndelivered`: a log warning plus
+  `BroadcastFailed`), never swallow: it runs after the response, so nothing else would. The client keeps ONE Guzzle handler for its lifetime (keep-alive;
   `PendingRequest::setHandler`, so `Http::fake` still intercepts).
   **laravel/reverb and pusher/pusher-php-server are refused** (owner,
   q_63a8ab0c); never add them, any Pusher-protocol server works through this driver.

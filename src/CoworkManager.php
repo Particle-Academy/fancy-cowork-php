@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace FancyCowork;
 
 use Closure;
+use FancyCowork\Broadcasting\BroadcastFailed;
 use FancyCowork\Engine\Config;
 use FancyCowork\Engine\Engine;
 use FancyCowork\Engine\EngineHost;
@@ -16,6 +17,7 @@ use FancyCowork\Engine\Wire;
 use FancyCowork\Events\CoworkEventBase;
 use FancyCowork\Store\SessionStore;
 use FancyCowork\Support\Ulid;
+use Illuminate\Broadcasting\BroadcastException;
 use Illuminate\Contracts\Broadcasting\Factory as BroadcastFactory;
 use Illuminate\Contracts\Config\Repository as ConfigRepository;
 use Illuminate\Contracts\Container\Container;
@@ -712,8 +714,39 @@ final class CoworkManager
     {
         try {
             $this->container->make(BroadcastFactory::class)->connection()->broadcast([$channel], $event, [...$payload, 'socket' => $exceptSocket]);
+        } catch (Throwable $e) {
+            // The change is committed; a client that missed it re-syncs with GET. But
+            // say so: this runs after the response, so nothing else ever would.
+            $this->reportUndelivered($channel, $event, $e);
+        }
+    }
+
+    /**
+     * A broadcast that could not be delivered: one warning in the log and a
+     * {@see BroadcastFailed} event. Neither carries the payload. Neither may throw:
+     * this runs after the response, where an exception reaches nobody.
+     */
+    private function reportUndelivered(string $channel, string $event, Throwable $e): void
+    {
+        // A BroadcastException is the broadcaster's own refusal, written to be read
+        // (fancy-pusher's names the status, never the secret). Anything else may
+        // carry a URL or a body, so only its class is kept.
+        $reason = $e instanceof BroadcastException ? mb_substr($e->getMessage(), 0, 300) : $e::class;
+        $session = preg_match('/^presence-cowork\.session\.([A-Za-z0-9_-]{1,64})$/D', $channel, $m) === 1 ? $m[1] : null;
+
+        try {
+            if ($this->container->bound('log')) {
+                $this->container->make('log')->warning("fancy-cowork: `{$event}` on {$channel} was not delivered: {$reason}", [
+                    'channel' => $channel, 'event' => $event, 'session' => $session,
+                ]);
+            }
         } catch (Throwable) {
-            // The change is committed; a client that missed it re-syncs with GET.
+            // A broken logger must not stop the signal below.
+        }
+        try {
+            $this->events->dispatch(new BroadcastFailed($channel, $event, $session, $reason));
+        } catch (Throwable) {
+            // A listener that throws reaches nobody here either.
         }
     }
 
