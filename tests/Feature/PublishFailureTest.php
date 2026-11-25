@@ -166,3 +166,104 @@ it('reports a broadcast it could not deliver: a log line and a BroadcastFailed e
     $logged = json_encode($warnings[0]);
     expect($logged)->not->toContain('0.25')->not->toContain('app-secret');
 });
+
+/*
+ * 0.5.0 as first written retried every Illuminate ConnectionException, and Laravel
+ * wraps EVERY Guzzle TransferException in one: a read timeout too, where the POST
+ * had already reached the service. Against a real socket service that answered
+ * slower than the timeout, one publish was delivered three times, held the worker
+ * for three timeouts plus the back-off (3.8 s at timeout 1, 15.75 s at the default
+ * 5) where 0.4.2 held it for one, and was then reported as undelivered.
+ *
+ * The Pusher protocol has no idempotency key, so a publish that may have been sent
+ * is never sent again. Only a failure before the request went out is retried.
+ */
+
+/** A socket service that fails the first publish with `$cause`, then answers 200. */
+function failingOnceWith(Throwable $cause, int &$calls): HttpFactory
+{
+    $http = new HttpFactory;
+    $http->fake(function () use (&$calls, $http, $cause) {
+        $calls++;
+        if ($calls === 1) {
+            throw new ConnectionException($cause->getMessage(), 0, $cause);
+        }
+
+        return $http->response('{}', 200);
+    });
+
+    return $http;
+}
+
+function probeRequest(): GuzzleHttp\Psr7\Request
+{
+    return new GuzzleHttp\Psr7\Request('POST', 'http://127.0.0.1:6001/apps/app-id/events');
+}
+
+/**
+ * Guzzle 7's ConnectException, which the package also accepts (^7.8.2): raised for
+ * ANY cURL timeout, with curl_getinfo in getHandlerContext(). Guzzle 8 dropped both.
+ *
+ * @param  array<string, mixed>  $context
+ */
+function guzzle7ConnectException(string $message, array $context): GuzzleHttp\Exception\ConnectException
+{
+    return new class($message, probeRequest(), $context) extends GuzzleHttp\Exception\ConnectException
+    {
+        /** @param  array<string, mixed>  $context */
+        public function __construct(string $message, Psr\Http\Message\RequestInterface $request, private readonly array $context)
+        {
+            parent::__construct($message, $request);
+        }
+
+        /** @return array<string, mixed> */
+        public function getHandlerContext(): array
+        {
+            return $this->context;
+        }
+    };
+}
+
+it('does not resend a publish that timed out after it was sent (Guzzle 8: NetworkTimeoutException)', function (): void {
+    coworkApp();
+    $calls = 0;
+    $http = failingOnceWith(new GuzzleHttp\Exception\NetworkTimeoutException('cURL error 28: Operation timed out after 5001 milliseconds with 0 bytes received', probeRequest()), $calls);
+    $slept = [];
+
+    expect(fn () => clientWith($http, function (int $ms) use (&$slept): void {
+        $slept[] = $ms;
+    })->trigger(['presence-x'], 'cowork.intent', ['n' => 1]))
+        ->toThrow(Illuminate\Broadcasting\BroadcastException::class, 'may have been delivered');
+
+    expect($calls)->toBe(1)->and($slept)->toBe([]);
+});
+
+it('does not resend a publish that timed out after it was sent (Guzzle 7: ConnectException with bytes sent)', function (): void {
+    coworkApp();
+    $calls = 0;
+    // Guzzle 7 raises ConnectException for any cURL timeout and puts curl_getinfo in
+    // the handler context: request_size > 0 means the request went out.
+    $http = failingOnceWith(guzzle7ConnectException('cURL error 28: Operation timed out', ['errno' => 28, 'request_size' => 412]), $calls);
+
+    expect(fn () => clientWith($http, fn (int $ms) => null)->trigger(['presence-x'], 'cowork.intent', ['n' => 1]))
+        ->toThrow(Illuminate\Broadcasting\BroadcastException::class, 'may have been delivered');
+
+    expect($calls)->toBe(1);
+});
+
+it('still retries a connection that never carried the request', function (Throwable $cause): void {
+    coworkApp();
+    $calls = 0;
+    $http = failingOnceWith($cause, $calls);
+    $slept = [];
+
+    clientWith($http, function (int $ms) use (&$slept): void {
+        $slept[] = $ms;
+    })->trigger(['presence-x'], 'cowork.intent', ['n' => 1]);
+
+    expect($calls)->toBe(2)->and($slept)->toBe([250]);
+})->with([
+    'refused (Guzzle 8)' => fn () => new GuzzleHttp\Exception\ConnectException('cURL error 7: Failed to connect', probeRequest()),
+    'connect timeout (Guzzle 8)' => fn () => new GuzzleHttp\Exception\ConnectTimeoutException('cURL error 28: Connection timed out after 5000 milliseconds', probeRequest()),
+    'refused (Guzzle 7, nothing sent)' => fn () => guzzle7ConnectException('cURL error 7: Failed to connect', ['errno' => 7, 'request_size' => 0]),
+]);

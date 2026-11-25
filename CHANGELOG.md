@@ -37,6 +37,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (the service restarting, a dropped keep-alive) lost the event on the first attempt.
   They are now retried within the same budget. When the service names no
   `Retry-After`, the first wait is 250 ms (was 1 s), doubled per retry. Nothing to do.
+- **A publish that may already have arrived is never sent again.** Only a connection
+  that failed before the request went out (refused, unresolved, a connect timeout) is
+  retried. A read timeout, or a transfer that broke after the request was written,
+  is reported as `may have been delivered` and not resent: the Pusher protocol has no
+  idempotency key, so a resend delivers the event twice. (Laravel wraps every Guzzle
+  transfer failure in one `ConnectionException`, so the first cut of this release
+  retried them all. Against a service slower than the timeout it delivered one event
+  three times and held the worker for three timeouts plus the back-off, then
+  reported it undelivered.) Nothing to do.
 
 ### Changed
 

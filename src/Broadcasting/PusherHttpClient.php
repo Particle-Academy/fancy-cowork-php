@@ -6,6 +6,7 @@ namespace FancyCowork\Broadcasting;
 
 use Closure;
 use GuzzleHttp\Exception\ConnectException;
+use GuzzleHttp\Exception\TransferException;
 use GuzzleHttp\Utils;
 use Illuminate\Broadcasting\BroadcastException;
 use Illuminate\Http\Client\ConnectionException;
@@ -181,7 +182,7 @@ final class PusherHttpClient
 
     /**
      * One signed POST. A refusal the service can recover from (429, 500, 502, 503,
-     * 504, or a connection that failed) is retried after its Retry-After (seconds
+     * 504, or a connection that failed before the request was sent) is retried after its Retry-After (seconds
      * or an HTTP date) or, when it names none, after `backoff_ms` doubled per
      * retry; at most `retries` times and never waiting more than `retry_budget_ms`
      * in total. A wait that would pass the budget is not started: the publish fails
@@ -197,6 +198,7 @@ final class PusherHttpClient
 
             $response = null;
             $failure = null;
+            $unsent = false;
             try {
                 $this->handler ??= $this->handlerFactory !== null ? ($this->handlerFactory)() : Utils::chooseHandler();
                 $response = ($this->http)()
@@ -206,14 +208,17 @@ final class PusherHttpClient
                     ->withBody($body, 'application/json')
                     ->post($this->baseUrl.$path.'?'.http_build_query($query));
             } catch (ConnectionException|ConnectException $e) {
-                $failure = 'failed: '.$e::class;
+                $unsent = self::neverSent($e);
+                $failure = $unsent
+                    ? 'failed: '.$e::class
+                    : 'may have been delivered: '.$e::class.' after the request was sent; not resent';
             } catch (Throwable $e) {
                 throw new BroadcastException("fancy-pusher: publishing `{$event}` failed: ".$e::class.'.');
             }
             if ($response !== null && $response->successful()) {
                 return;
             }
-            $retryable = $response === null || in_array($response->status(), self::RETRYABLE, true);
+            $retryable = $response === null ? $unsent : in_array($response->status(), self::RETRYABLE, true);
             if ($retryable && $attempt < $this->retries) {
                 $header = $response === null ? '' : $response->header('Retry-After');
                 $wait = $this->retryAfterMs($header, $now) ?? $this->backoffMs * (2 ** $attempt);
@@ -230,6 +235,39 @@ final class PusherHttpClient
                 ? "fancy-pusher: publishing `{$event}` {$failure} (after {$tried} attempt(s), {$waited} ms waiting)."
                 : "fancy-pusher: publishing `{$event}` was refused with HTTP {$response->status()} (after {$tried} attempt(s), {$waited} ms waiting).");
         }
+    }
+
+    /**
+     * Whether a failed attempt provably never put the request on the wire, so sending
+     * it again cannot deliver the event twice. The Pusher protocol has no idempotency
+     * key: a publish that may have reached the service is never resent.
+     *
+     * Laravel wraps EVERY Guzzle transfer failure in a ConnectionException, a read
+     * timeout included, so the wrapper says nothing; the Guzzle cause decides:
+     * - a ConnectException (Guzzle 8: refused, unresolved, or a connect timeout,
+     *   ConnectTimeoutException) is connect-phase, unless its handler context (Guzzle 7
+     *   puts curl_getinfo there, and raises ConnectException for ANY cURL timeout)
+     *   shows a non-zero `request_size`: bytes went out;
+     * - any other cause (Guzzle 8's NetworkTimeoutException after the request was
+     *   written, a transfer error mid-response) may have been delivered;
+     * - no Guzzle cause at all (a ConnectionException thrown bare) is taken at its word.
+     */
+    private static function neverSent(Throwable $e): bool
+    {
+        $cause = $e;
+        while ($cause !== null && ! $cause instanceof TransferException) {
+            $cause = $cause->getPrevious();
+        }
+        if ($cause === null) {
+            return true;
+        }
+        if (! $cause instanceof ConnectException) {
+            return false;
+        }
+        // Guzzle 7 only; Guzzle 8 has no handler context and needs none.
+        $sent = method_exists($cause, 'getHandlerContext') ? ($cause->getHandlerContext()['request_size'] ?? 0) : 0;
+
+        return ! is_numeric($sent) || (int) $sent === 0;
     }
 
     /** Retry-After as milliseconds: delta-seconds or an HTTP date; null when absent or unreadable. */
